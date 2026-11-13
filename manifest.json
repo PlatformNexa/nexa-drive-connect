@@ -1,0 +1,9 @@
+{
+  "id": "nexa-drive-connect",
+  "name": "NEXA Drive Connect",
+  "version": "1.0.0",
+  "minAppVersion": "1.11.4",
+  "description": "Sincronize notas locais com uma pasta escolhida do Google Drive, com prévia e proteção contra conflitos.",
+  "author": "NEXA",
+  "isDesktopOnly": false
+}

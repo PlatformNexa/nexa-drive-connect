@@ -1,0 +1,10 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const c=fs.readFileSync(__dirname+'/../src/core.js','utf8');
+const ctx={Uint8Array,DataView,Map,Set,Array,Number,Math,String,Error};vm.runInNewContext(c+';globalThis.test=NEXA_CORE;',ctx);
+const x=ctx.test;
+assert.equal(x.md5(new TextEncoder().encode('abc')),'900150983cd24fb0d6963f7d28e17f72');
+for(const p of ['../a','/.obsidian','a//b','a/../b','a\\..\\b','C:/tmp'])assert.throws(()=>x.normalizePath(p));
+assert.equal(x.allowedPath('.obsidian/plugins/plugin.js'),false);
+const a=x.planSync([{path:'A.md',md5:'abc'}],[],{});assert.equal(a.actions[0].type,'UPLOAD_NEW');
+const b=x.planSync([{path:'A.md',md5:'a'}],[{path:'A.md',id:'id',md5:'b'}],{'A.md':{md5:'old',remoteId:'id'}});assert.equal(b.blocked[0].reason,'ALTERACAO_CONCORRENTE');
+console.log('PASS núcleo: hash, políticas de caminho, detecção de conflito');

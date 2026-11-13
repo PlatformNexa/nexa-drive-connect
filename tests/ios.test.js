@@ -1,0 +1,15 @@
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs');
+const main=fs.readFileSync('main.js','utf8');
+assert.match(main,/registerObsidianProtocolHandler/);
+assert.match(main,/oauth2\.googleapis\.com\/token/);
+assert.match(main,/NEXA_SYNC\.SyncEngine/);
+assert.match(main,/secretStorage/);
+assert.match(main,/CONFLITO|Conflitos|conflitos/);
+assert.doesNotMatch(main,/NEXA_Pareamento_Windows|NEXA-PAIR1/);
+assert.doesNotMatch(main,/require\(['"](?:fs|electron|crypto)['"]\)/);
+const callback=fs.readFileSync('docs/callback.html','utf8');
+assert.match(callback,/history\.replaceState/);
+assert.match(callback,/obsidian:\/\/nexa-drive-connect/);
+assert.doesNotMatch(callback,/fetch\(|XMLHttpRequest/);
+console.log('PASS iOS: OAuth callback, dependências móveis, sem pareamento Windows');

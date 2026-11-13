@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer"><meta http-equiv="Cache-Control" content="no-store">
+<title>NEXA Drive Connect · Google</title>
+<style>body{font:16px system-ui;background:#171923;color:#f4f5fa;padding:32px;max-width:640px;margin:auto}a{color:#b9a3ff}code{overflow-wrap:anywhere}</style></head><body>
+<h1>NEXA Drive Connect</h1><p id="status">Verificando retorno da autorização…</p><p><a id="back" hidden href="#">Abrir Obsidian</a></p>
+<script>
+(function(){
+ 'use strict';const params=new URLSearchParams(location.search);const code=params.get('code'),state=params.get('state');
+ const error=params.get('error');history.replaceState({},document.title,location.pathname);
+ const status=document.getElementById('status');const link=document.getElementById('back');
+ if(error){status.textContent='O Google não autorizou o acesso: '+error;return;}
+ if(!code||!state||!/^[a-f0-9]{36}$/.test(state)){status.textContent='Retorno incompleto. Volte ao Obsidian e reinicie a autorização.';return;}
+ const next='obsidian://nexa-drive-connect?code='+encodeURIComponent(code)+'&state='+encodeURIComponent(state);
+ status.textContent='Autorização recebida. Toque em Abrir Obsidian se não retornar automaticamente.';
+ link.href=next;link.hidden=false;
+ window.location.assign(next);
+})();
+</script></body></html>

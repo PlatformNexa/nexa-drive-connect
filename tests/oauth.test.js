@@ -1,0 +1,26 @@
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const context={crypto:require('node:crypto').webcrypto,TextEncoder,URLSearchParams,Uint8Array,Date,btoa,console};
+vm.createContext(context);vm.runInContext(fs.readFileSync('src/auth.js','utf8')+';this.auth=NEXA_AUTH;',context);
+(async()=>{
+ const a=context.auth;
+ const p=await a.start('12345-abc.apps.googleusercontent.com');
+ const u=new URL(p.url);assert.equal(u.hostname,'accounts.google.com');
+ assert.equal(u.searchParams.get('code_challenge_method'),'S256');
+ assert.equal(u.searchParams.get('redirect_uri'),a.CALLBACK);
+ assert.equal(u.searchParams.get('scope'),a.SCOPE);
+ assert.match(p.state,/^[a-f0-9]{36}$/);
+ const requests=[];
+ const request=async opts=>{requests.push(opts);return {status:200,json:{access_token:'test-token',refresh_token:'test-refresh',expires_in:3599}}};
+ const secret='private-test-secret';
+ const out=await a.exchange(request,'12345-abc.apps.googleusercontent.com',secret,'test-code',p.verifier);
+ assert.equal(out.refresh_token,'test-refresh');
+ assert.equal(requests.length,1);
+ const body=new URLSearchParams(requests[0].body);
+ assert.equal(body.get('grant_type'),'authorization_code');
+ assert.equal(body.get('code_verifier'),p.verifier);
+ assert.equal(body.get('client_secret'),secret);
+ await a.refresh(request,'12345-abc.apps.googleusercontent.com',secret,'test-refresh');
+ assert.equal(new URLSearchParams(requests[1].body).get('grant_type'),'refresh_token');
+ console.log('PASS OAuth: PKCE, state, scopes, troca e refresh simulados');
+})().catch(e=>{console.error(e);process.exitCode=1;});

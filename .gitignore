@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.obsidian/
+.env
+.env.*
+*.log
+*.key
+*.pem
+*.token
+.DS_Store
