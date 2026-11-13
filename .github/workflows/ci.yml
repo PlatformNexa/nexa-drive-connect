@@ -19,6 +19,15 @@ jobs:
       - run: node --check main.js
       - name: Compare compiled output with published source
         run: git diff --exit-code -- main.js
+      - name: Export desktop candidate binaries
+        if: github.ref == 'refs/heads/feature/windows-desktop'
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEXA-Drive-Connect-Windows-Candidate
+          path: |
+            main.js
+            manifest.json
+          retention-days: 14
       - name: Publish matching stable release after verified build
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:

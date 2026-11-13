@@ -11,3 +11,5 @@ O diagnóstico de caminho é **heurístico**: uma unidade virtual montada, por e
 A API de sincronização Google continua usando o escopo `drive`, que tem acesso potencialmente amplo, e a sincronização real no Windows ainda não passou por teste dentro do aplicativo. OAuth depende da validação do provedor, inclusive troca de código sem Client Secret.
 ## Próximo teste no Windows
 Em um cofre de laboratório **local**, não compartilhado e sem notas oficiais, instalar temporariamente o build candidato, abrir Configurações → NEXA Drive Connect → Verificar cofre, depois validar o login OAuth e testar arquivos artificiais. Não habilitar modo automático até conferir prévia, aplicação e readback. Este código está em branch de desenvolvimento e **não foi publicado como release oficial**.
+
+O pipeline do GitHub gera um artefato **NEXA-Drive-Connect-Windows-Candidate** com `main.js` e `manifest.json` para a homologação em um cofre local de laboratório. Não é uma release do catálogo.

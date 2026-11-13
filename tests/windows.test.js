@@ -27,4 +27,38 @@ assert.match(main,/firstSyncApproved/);
 assert.match(main,/boundRootId/);
 assert.match(main,/classify\(Platform\)/);
 assert.doesNotMatch(main,/require\(['"](?:fs|electron|path|crypto)['"]\)/);
-console.log('PASS Windows desktop: plataforma, cofre local, aviso cloud-drive, trava de primeiro sync');
+// Exercise the real plugin's automatic-sync gate without network or local filesystem I/O.
+const runtime={module:{exports:{}},require:name=>{
+  if(name!=='obsidian')throw Error('unexpected require '+name);
+  return {Plugin:class{},PluginSettingTab:class{},Setting:class{},Modal:class{},Notice:class{},
+    requestUrl:async()=>{throw Error('network should not be used')},
+    Platform:{isDesktopApp:true,isWin:true}};
+},console,Date,Map,Set,Uint8Array,ArrayBuffer,DataView,TextEncoder,URLSearchParams};
+vm.createContext(runtime);
+for(const n of ['core','audit','auth','drive','sync','platform','plugin-ios']){
+  vm.runInContext(fs.readFileSync('src/'+n+'.js','utf8'),runtime);
+}
+(async()=>{
+  const PluginClass=runtime.module.exports;
+  const plugin=new PluginClass();
+  let previews=0;
+  plugin.busy=false;plugin.nextTick=0;
+  plugin.settings={autoSync:true,firstSyncApproved:false,boundRootId:'',remoteRootId:'root-123456789',intervalMinutes:5,lastStatus:''};
+  plugin.snapshot=async()=>{previews++;return{plan:{blocked:[],actions:[]}};};
+  plugin.saveSettings=async()=>{};
+  await plugin.maybeAutoSync();
+  assert.equal(previews,0,'no automatic sync before manual approval');
+  plugin.settings.firstSyncApproved=true;plugin.settings.boundRootId='another-root';
+  await plugin.maybeAutoSync();
+  assert.equal(previews,0,'no automatic sync after changing remote root');
+  plugin.settings.boundRootId=plugin.settings.remoteRootId;
+  await plugin.maybeAutoSync();
+  assert.equal(previews,1,'automatic sync may preview only after manual approval');
+  plugin.settings.firstSyncApproved=false;plugin.settings.boundRootId='';
+  plugin.busy=false;
+  plugin.engine=()=>({apply:async()=>({status:'CONCLUIDO_COM_READBACK',success:[{type:'UPLOAD_NEW'}],blocked:[],failed:[]})});
+  await plugin.applySnapshot({rootId:'root-123456789',plan:{actions:[{type:'UPLOAD_NEW'}],blocked:[],unchanged:[]}});
+  assert.equal(plugin.settings.firstSyncApproved,true,'manual success records approval');
+  assert.equal(plugin.settings.boundRootId,'root-123456789','approved root is persisted');
+  console.log('PASS Windows desktop: platform, local vault advisory, first-sync permission and root guard');
+})().catch(e=>{console.error(e);process.exitCode=1;});
