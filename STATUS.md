@@ -19,3 +19,9 @@
 - Testes simulados Windows: executados em CI (quando aplicável).
 - Teste real no aplicativo Obsidian Desktop, OAuth real e sync real: PENDENTES.
 - A release 1.0.1 sob revisão do Obsidian permanece intacta.
+
+
+## Merge (branch Windows, em QA)
+- Merge conservador .md/UTF-8 com ancestral verificável, backups e bloqueio em sobreposição: implementação candidata.
+- Verificação automatizada simulada: por CI.
+- Validação real Drive/Windows/iOS/recuperação: ainda pendente.

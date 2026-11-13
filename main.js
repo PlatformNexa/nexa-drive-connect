@@ -308,6 +308,44 @@ const NEXA_SYNC = (() => {
       }
       return {files,skipped};
     }
+    async storeMergeBase(path,data){
+      if(!/\.md$/i.test(path))return;
+      const b=bytes(data);
+      if(b.byteLength>NEXA_MERGE.MAX_BYTES)return;
+      try{NEXA_MERGE.decode(b);}catch(_){return;}
+      const key=NEXA_CORE.md5(b), dir='.nexa-connect/merge-base';
+      if(!(await this.vault.adapter.exists('.nexa-connect')))await this.vault.adapter.mkdir('.nexa-connect');
+      if(!(await this.vault.adapter.exists(dir)))await this.vault.adapter.mkdir(dir);
+      const dest=dir+'/'+key+'.txt';
+      if(!(await this.vault.adapter.exists(dest)))await this.vault.adapter.writeBinary(dest,asArrayBuffer(b));
+      const written=await this.vault.adapter.readBinary(dest);
+      if(NEXA_CORE.md5(bytes(written))!==key)throw new Error('Base de merge inválida; operação interrompida.');
+    }
+    async readMergeBase(hash){
+      if(!/^[a-f0-9]{32}$/.test(hash||''))throw new Error('Hash da base inválido.');
+      const dest='.nexa-connect/merge-base/'+hash+'.txt';
+      if(!(await this.vault.adapter.exists(dest)))throw new Error('Versão ancestral não disponível.');
+      const contents=await this.vault.adapter.readBinary(dest);
+      if(NEXA_CORE.md5(bytes(contents))!==hash)throw new Error('Versão ancestral não passou em integridade.');
+      return NEXA_MERGE.decode(bytes(contents));
+    }
+    async tryMergeConflict(conflict,remote,local,state){
+      const p=conflict.path,b=state.baseline?.[p];
+      if(!p||!/\.md$/i.test(p)||!b?.md5)return null;
+      const l=local.files.find(f=>f.path===p),r=remote.files.find(f=>f.path===p);
+      if(!l||!r||l.size>NEXA_MERGE.MAX_BYTES||r.size>NEXA_MERGE.MAX_BYTES)return null;
+      try{
+        const original=await this.readMergeBase(b.md5);
+        const {contents}=await this.checkLocal(p,l.md5);
+        await this.checkRemote(r.id,r.md5,r.parentId);
+        const remoteBytes=await this.drive.download(r.id);
+        if(NEXA_CORE.md5(bytes(remoteBytes))!==r.md5)return null;
+        const result=NEXA_MERGE.merge(original,NEXA_MERGE.decode(bytes(contents)),NEXA_MERGE.decode(bytes(remoteBytes)));
+        if(!result.ok)return null;
+        const mergeBytes=NEXA_MERGE.encode(result.text);
+        return {type:'MERGE_UPDATE',path:p,localMd5:l.md5,remoteMd5:r.md5,remoteId:r.id,mergedMd5:NEXA_CORE.md5(mergeBytes)};
+      }catch(_){return null;}
+    }
     async preview(rootId, internal=false){
       if(this.busy && !internal)throw new Error('Outra operação está ativa.');
       const remote=await this.drive.tree(rootId);
@@ -321,6 +359,17 @@ const NEXA_SYNC = (() => {
       plan.actions=plan.actions.filter(a=>{
         if(localInvalid.has(a.path)||remoteInvalid.has(a.path)) {plan.blocked.push({path:a.path,reason:'ARQUIVO_NAO_PROCESSAVEL'});return false;} return true;
       });
+      // Only disjoint, small UTF-8 Markdown edits are merged automatically.
+      // Missing/corrupted merge ancestor, binary, overlapping changes remain blocked.
+      const stillBlocked=[];let attempted=0;
+      for(const item of plan.blocked){
+        if(item.reason==='ALTERACAO_CONCORRENTE'&&attempted++<20){
+          const action=await this.tryMergeConflict(item,remote,local,state);
+          if(action){plan.actions.push(action);continue;}
+        }
+        stillBlocked.push(item);
+      }
+      plan.blocked=stillBlocked;
       plan.blocked.push(...local.skipped,...remote.skipped,...tooBig);
       return {rootId,plan,remote,local,baseline:state.baseline||{},createdAt:new Date().toISOString()};
     }
@@ -381,7 +430,7 @@ const NEXA_SYNC = (() => {
       try{
         // Fresh metadata pass protects against changes since preview. It is not a distributed transaction.
         const fresh=await this.preview(snapshot.rootId,true);
-        const signatures=rows=>rows.map(a=>[a.type,a.path,a.remoteId||'',a.remoteMd5||'',a.localMd5||''].join('|')).sort().join('\n');
+        const signatures=rows=>rows.map(a=>[a.type,a.path,a.remoteId||'',a.remoteMd5||'',a.localMd5||'',a.mergedMd5||''].join('|')).sort().join('\n');
         if(signatures(fresh.plan.actions)!==signatures(snapshot.plan.actions)||
           JSON.stringify(fresh.plan.blocked)!==JSON.stringify(snapshot.plan.blocked))throw new Error('O estado mudou depois da prévia; aprovação cancelada.');
         const state=(await this.getData())||{};
@@ -390,14 +439,36 @@ const NEXA_SYNC = (() => {
         const dirs=new Map(fresh.remote.dirs);
         for(const path of fresh.plan.unchanged){
           const f=remoteMap.get(path); const l=fresh.local.files.find(x=>x.path===path);
-          if(f&&l)baseline[path]={md5:l.md5,remoteId:f.id};
+          if(f&&l){
+            const current=await this.checkLocal(path,l.md5);
+            await this.storeMergeBase(path,current.contents);
+            baseline[path]={md5:l.md5,remoteId:f.id};
+          }
         }
         await this.setData({remoteRootId:snapshot.rootId,baseline});
         for(const action of fresh.plan.actions){
           try{
             const p=NEXA_CORE.normalizePath(action.path);
             if(!NEXA_CORE.allowedPath(p))throw new Error('Caminho fora do escopo.');
-            if(action.type.startsWith('UPLOAD')){
+            if(action.type==='MERGE_UPDATE'){
+              const {f,contents}=await this.checkLocal(p,action.localMd5);
+              await this.checkRemote(action.remoteId,action.remoteMd5,remoteMap.get(p).parentId);
+              const oldRemote=await this.drive.download(action.remoteId);
+              if(NEXA_CORE.md5(bytes(oldRemote))!==action.remoteMd5)throw new Error('Remoto mudou antes do merge.');
+              const ancestor=await this.readMergeBase(baseline[p]?.md5);
+              const merged=NEXA_MERGE.merge(ancestor,NEXA_MERGE.decode(bytes(contents)),NEXA_MERGE.decode(bytes(oldRemote)));
+              if(!merged.ok)throw new Error('Merge tornou-se ambíguo. Interrompido.');
+              const data=NEXA_MERGE.encode(merged.text);
+              if(NEXA_CORE.md5(data)!==action.mergedMd5)throw new Error('Merge mudou desde a prévia.');
+              await this.backup(p,contents,'LOCAL_ANTES_MERGE');
+              await this.backup(p,oldRemote,'REMOTO_ANTES_MERGE');
+              await this.drive.upload(p.split('/').pop(),null,asArrayBuffer(data),action.remoteId);
+              const meta=await this.drive.metadata(action.remoteId);
+              if(meta.md5Checksum!==action.mergedMd5)throw new Error('Merge remoto não passou no readback.');
+              await this.vault.modifyBinary(f,asArrayBuffer(data));
+              await this.checkLocal(p,action.mergedMd5);
+              baseline[p]={md5:action.mergedMd5,remoteId:action.remoteId};
+            }else if(action.type.startsWith('UPLOAD')){
               const {contents}=await this.checkLocal(p,action.localMd5);
               if(action.type==='UPLOAD_NEW'){
                 const parent=await this.ensureRemoteParent(p,snapshot.rootId,dirs);
@@ -434,6 +505,8 @@ const NEXA_SYNC = (() => {
               if(!final)throw new Error('Readback local falhou.');
               baseline[p]={md5:action.remoteMd5,remoteId:action.remoteId};
             }
+            const synchronized=await this.checkLocal(p,baseline[p].md5);
+            await this.storeMergeBase(p,synchronized.contents);
             await this.setData({remoteRootId:snapshot.rootId,baseline});
             report.success.push({type:action.type,path:p});
           }catch(e){
@@ -449,6 +522,70 @@ const NEXA_SYNC = (() => {
 
   }
   return {SyncEngine,LIMIT_BYTES};
+})();
+
+
+/* src/merge.js */
+/* NEXA conservative, line-based diff3 merge. No network or secrets. */
+const NEXA_MERGE=(()=>{
+ 'use strict';
+ const MAX_BYTES=256*1024, MAX_LINES=1200, MAX_CELLS=1500000;
+ const encoder=new TextEncoder(),decoder=new TextDecoder('utf-8',{fatal:true});
+ function encode(text){return encoder.encode(text);}
+ function decode(data){
+   const b=data instanceof Uint8Array?data:new Uint8Array(data);
+   if(b.byteLength>MAX_BYTES)throw Error('BASE_ACIMA_DO_LIMITE');
+   const text=decoder.decode(b);
+   if(text.includes('\0'))throw Error('CONTEUDO_NAO_TEXTUAL');
+   return text;
+ }
+ function edits(base,other){
+   const n=base.length,m=other.length;
+   if(n>MAX_LINES||m>MAX_LINES||(n+1)*(m+1)>MAX_CELLS)throw Error('TEXTO_COMPLEXO_DEMAIS');
+   const dp=Array.from({length:n+1},()=>new Uint16Array(m+1));
+   for(let i=n-1;i>=0;i--)for(let j=m-1;j>=0;j--)
+     dp[i][j]=base[i]===other[j]?1+dp[i+1][j+1]:Math.max(dp[i+1][j],dp[i][j+1]);
+   const out=[];let h=null,i=0,j=0;
+   while(i<n||j<m){
+     if(i<n&&j<m&&base[i]===other[j]){
+       if(h){h.end=i;out.push(h);h=null;} i++;j++;continue;
+     }
+     if(!h)h={start:i,end:i,content:[]};
+     if(j<m&&(i>=n||dp[i][j+1]>=dp[i+1][j]))h.content.push(other[j++]);
+     else{i++;h.end=i;}
+   }
+   if(h){h.end=i;out.push(h);}
+   return out;
+ }
+ function same(a,b){
+   return a.start===b.start&&a.end===b.end&&
+     a.content.length===b.content.length&&a.content.every((x,i)=>x===b.content[i]);
+ }
+ function touch(a,b){return a.start<=b.end&&b.start<=a.end;}
+ function merge(baseText,localText,remoteText){
+   if([baseText,localText,remoteText].some(s=>typeof s!=='string'||encode(s).byteLength>MAX_BYTES))
+     return {ok:false,reason:'ARQUIVO_MERGE_ACIMA_LIMITE'};
+   if(localText===remoteText)return {ok:true,text:localText,changes:0};
+   try{
+     const base=baseText.split('\n'),loc=localText.split('\n'),rem=remoteText.split('\n');
+     const left=edits(base,loc),right=edits(base,rem);
+     for(const a of left)for(const b of right)if(touch(a,b)&&!same(a,b))
+       return {ok:false,reason:'TRECHOS_SOBREPOSTOS'};
+     const all=left.slice();
+     for(const b of right)if(!all.some(a=>same(a,b)))all.push(b);
+     all.sort((a,b)=>a.start-b.start||a.end-b.end);
+     const out=[];let pos=0;
+     for(const h of all){
+       if(h.start<pos)return {ok:false,reason:'HUNKS_SOBREPOSTOS'};
+       out.push(...base.slice(pos,h.start),...h.content);pos=h.end;
+     }
+     out.push(...base.slice(pos));
+     const text=out.join('\n');
+     if(encode(text).byteLength>MAX_BYTES)return {ok:false,reason:'RESULTADO_MUITO_GRANDE'};
+     return {ok:true,text,changes:all.length};
+   }catch(e){return {ok:false,reason:String(e.message||e)};}
+ }
+ return {encode,decode,merge,MAX_BYTES};
 })();
 
 
@@ -493,10 +630,10 @@ class NexaPlanModal extends Modal {
   onOpen(){
     const el=this.contentEl;el.empty();const p=this.snapshot.plan;
     el.createEl('h2',{text:'NEXA — Prévia de sincronização'});
-    el.createEl('p',{text:`Pasta remota: ${this.snapshot.remote.rootName} · Enviar/baixar: ${p.actions.length} · Conflitos/bloqueios: ${p.blocked.length} · Iguais: ${p.unchanged.length}`});
+    el.createEl('p',{text:`Pasta remota: ${this.snapshot.remote.rootName} · Enviar/baixar/mesclar: ${p.actions.length} · Conflitos/bloqueios: ${p.blocked.length} · Iguais: ${p.unchanged.length}`});
     el.createEl('p',{text:'Nenhuma exclusão é propagada. O primeiro espelhamento divergente é bloqueado. Backups locais são criados antes de substituições.'});
     const list=el.createEl('div');list.style.maxHeight='40vh';list.style.overflowY='auto';
-    for(const a of p.actions.slice(0,75))list.createEl('p',{text:`${a.type}: ${a.path}`});
+    for(const a of p.actions.slice(0,75))list.createEl('p',{text:`${a.type==='MERGE_UPDATE'?'MESCLAR (mudanças independentes)':a.type}: ${a.path}`});
     for(const b of p.blocked.slice(0,75))list.createEl('p',{text:`BLOQUEADO: ${b.path||'(sem caminho)'} — ${b.reason}`});
     if(p.actions.length+p.blocked.length>150)list.createEl('p',{text:'Prévia resumida. Operações excedentes não são ocultadas na contagem.'});
     new Setting(el).addButton(b=>b.setButtonText('Fechar').onClick(()=>this.close()));

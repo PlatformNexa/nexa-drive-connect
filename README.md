@@ -63,3 +63,8 @@ Código-fonte disponibilizado para inspeção, com direitos reservados. Veja LIC
 ## Candidato Windows em desenvolvimento
 
 A implementação para **Obsidian Desktop/Windows** está em `feature/windows-desktop`, compartilhando o motor móvel. Ver [Guia Windows](docs/WINDOWS.md). Não interfere na revisão da release 1.0.1 do iPhone.
+
+
+## Merge de alterações independentes (candidato Windows)
+
+Merge Markdown de três vias com ancestral preservado localmente, backup local/remoto e bloqueio de edições sobrepostas. Ver [docs/MERGE.md](docs/MERGE.md). Recurso experimental na branch Windows: não validado em dispositivos físicos.

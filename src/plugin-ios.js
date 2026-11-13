@@ -9,10 +9,10 @@ class NexaPlanModal extends Modal {
   onOpen(){
     const el=this.contentEl;el.empty();const p=this.snapshot.plan;
     el.createEl('h2',{text:'NEXA — Prévia de sincronização'});
-    el.createEl('p',{text:`Pasta remota: ${this.snapshot.remote.rootName} · Enviar/baixar: ${p.actions.length} · Conflitos/bloqueios: ${p.blocked.length} · Iguais: ${p.unchanged.length}`});
+    el.createEl('p',{text:`Pasta remota: ${this.snapshot.remote.rootName} · Enviar/baixar/mesclar: ${p.actions.length} · Conflitos/bloqueios: ${p.blocked.length} · Iguais: ${p.unchanged.length}`});
     el.createEl('p',{text:'Nenhuma exclusão é propagada. O primeiro espelhamento divergente é bloqueado. Backups locais são criados antes de substituições.'});
     const list=el.createEl('div');list.style.maxHeight='40vh';list.style.overflowY='auto';
-    for(const a of p.actions.slice(0,75))list.createEl('p',{text:`${a.type}: ${a.path}`});
+    for(const a of p.actions.slice(0,75))list.createEl('p',{text:`${a.type==='MERGE_UPDATE'?'MESCLAR (mudanças independentes)':a.type}: ${a.path}`});
     for(const b of p.blocked.slice(0,75))list.createEl('p',{text:`BLOQUEADO: ${b.path||'(sem caminho)'} — ${b.reason}`});
     if(p.actions.length+p.blocked.length>150)list.createEl('p',{text:'Prévia resumida. Operações excedentes não são ocultadas na contagem.'});
     new Setting(el).addButton(b=>b.setButtonText('Fechar').onClick(()=>this.close()));

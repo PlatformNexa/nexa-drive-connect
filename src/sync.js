@@ -20,6 +20,44 @@ const NEXA_SYNC = (() => {
       }
       return {files,skipped};
     }
+    async storeMergeBase(path,data){
+      if(!/\.md$/i.test(path))return;
+      const b=bytes(data);
+      if(b.byteLength>NEXA_MERGE.MAX_BYTES)return;
+      try{NEXA_MERGE.decode(b);}catch(_){return;}
+      const key=NEXA_CORE.md5(b), dir='.nexa-connect/merge-base';
+      if(!(await this.vault.adapter.exists('.nexa-connect')))await this.vault.adapter.mkdir('.nexa-connect');
+      if(!(await this.vault.adapter.exists(dir)))await this.vault.adapter.mkdir(dir);
+      const dest=dir+'/'+key+'.txt';
+      if(!(await this.vault.adapter.exists(dest)))await this.vault.adapter.writeBinary(dest,asArrayBuffer(b));
+      const written=await this.vault.adapter.readBinary(dest);
+      if(NEXA_CORE.md5(bytes(written))!==key)throw new Error('Base de merge inválida; operação interrompida.');
+    }
+    async readMergeBase(hash){
+      if(!/^[a-f0-9]{32}$/.test(hash||''))throw new Error('Hash da base inválido.');
+      const dest='.nexa-connect/merge-base/'+hash+'.txt';
+      if(!(await this.vault.adapter.exists(dest)))throw new Error('Versão ancestral não disponível.');
+      const contents=await this.vault.adapter.readBinary(dest);
+      if(NEXA_CORE.md5(bytes(contents))!==hash)throw new Error('Versão ancestral não passou em integridade.');
+      return NEXA_MERGE.decode(bytes(contents));
+    }
+    async tryMergeConflict(conflict,remote,local,state){
+      const p=conflict.path,b=state.baseline?.[p];
+      if(!p||!/\.md$/i.test(p)||!b?.md5)return null;
+      const l=local.files.find(f=>f.path===p),r=remote.files.find(f=>f.path===p);
+      if(!l||!r||l.size>NEXA_MERGE.MAX_BYTES||r.size>NEXA_MERGE.MAX_BYTES)return null;
+      try{
+        const original=await this.readMergeBase(b.md5);
+        const {contents}=await this.checkLocal(p,l.md5);
+        await this.checkRemote(r.id,r.md5,r.parentId);
+        const remoteBytes=await this.drive.download(r.id);
+        if(NEXA_CORE.md5(bytes(remoteBytes))!==r.md5)return null;
+        const result=NEXA_MERGE.merge(original,NEXA_MERGE.decode(bytes(contents)),NEXA_MERGE.decode(bytes(remoteBytes)));
+        if(!result.ok)return null;
+        const mergeBytes=NEXA_MERGE.encode(result.text);
+        return {type:'MERGE_UPDATE',path:p,localMd5:l.md5,remoteMd5:r.md5,remoteId:r.id,mergedMd5:NEXA_CORE.md5(mergeBytes)};
+      }catch(_){return null;}
+    }
     async preview(rootId, internal=false){
       if(this.busy && !internal)throw new Error('Outra operação está ativa.');
       const remote=await this.drive.tree(rootId);
@@ -33,6 +71,17 @@ const NEXA_SYNC = (() => {
       plan.actions=plan.actions.filter(a=>{
         if(localInvalid.has(a.path)||remoteInvalid.has(a.path)) {plan.blocked.push({path:a.path,reason:'ARQUIVO_NAO_PROCESSAVEL'});return false;} return true;
       });
+      // Only disjoint, small UTF-8 Markdown edits are merged automatically.
+      // Missing/corrupted merge ancestor, binary, overlapping changes remain blocked.
+      const stillBlocked=[];let attempted=0;
+      for(const item of plan.blocked){
+        if(item.reason==='ALTERACAO_CONCORRENTE'&&attempted++<20){
+          const action=await this.tryMergeConflict(item,remote,local,state);
+          if(action){plan.actions.push(action);continue;}
+        }
+        stillBlocked.push(item);
+      }
+      plan.blocked=stillBlocked;
       plan.blocked.push(...local.skipped,...remote.skipped,...tooBig);
       return {rootId,plan,remote,local,baseline:state.baseline||{},createdAt:new Date().toISOString()};
     }
@@ -93,7 +142,7 @@ const NEXA_SYNC = (() => {
       try{
         // Fresh metadata pass protects against changes since preview. It is not a distributed transaction.
         const fresh=await this.preview(snapshot.rootId,true);
-        const signatures=rows=>rows.map(a=>[a.type,a.path,a.remoteId||'',a.remoteMd5||'',a.localMd5||''].join('|')).sort().join('\n');
+        const signatures=rows=>rows.map(a=>[a.type,a.path,a.remoteId||'',a.remoteMd5||'',a.localMd5||'',a.mergedMd5||''].join('|')).sort().join('\n');
         if(signatures(fresh.plan.actions)!==signatures(snapshot.plan.actions)||
           JSON.stringify(fresh.plan.blocked)!==JSON.stringify(snapshot.plan.blocked))throw new Error('O estado mudou depois da prévia; aprovação cancelada.');
         const state=(await this.getData())||{};
@@ -102,14 +151,36 @@ const NEXA_SYNC = (() => {
         const dirs=new Map(fresh.remote.dirs);
         for(const path of fresh.plan.unchanged){
           const f=remoteMap.get(path); const l=fresh.local.files.find(x=>x.path===path);
-          if(f&&l)baseline[path]={md5:l.md5,remoteId:f.id};
+          if(f&&l){
+            const current=await this.checkLocal(path,l.md5);
+            await this.storeMergeBase(path,current.contents);
+            baseline[path]={md5:l.md5,remoteId:f.id};
+          }
         }
         await this.setData({remoteRootId:snapshot.rootId,baseline});
         for(const action of fresh.plan.actions){
           try{
             const p=NEXA_CORE.normalizePath(action.path);
             if(!NEXA_CORE.allowedPath(p))throw new Error('Caminho fora do escopo.');
-            if(action.type.startsWith('UPLOAD')){
+            if(action.type==='MERGE_UPDATE'){
+              const {f,contents}=await this.checkLocal(p,action.localMd5);
+              await this.checkRemote(action.remoteId,action.remoteMd5,remoteMap.get(p).parentId);
+              const oldRemote=await this.drive.download(action.remoteId);
+              if(NEXA_CORE.md5(bytes(oldRemote))!==action.remoteMd5)throw new Error('Remoto mudou antes do merge.');
+              const ancestor=await this.readMergeBase(baseline[p]?.md5);
+              const merged=NEXA_MERGE.merge(ancestor,NEXA_MERGE.decode(bytes(contents)),NEXA_MERGE.decode(bytes(oldRemote)));
+              if(!merged.ok)throw new Error('Merge tornou-se ambíguo. Interrompido.');
+              const data=NEXA_MERGE.encode(merged.text);
+              if(NEXA_CORE.md5(data)!==action.mergedMd5)throw new Error('Merge mudou desde a prévia.');
+              await this.backup(p,contents,'LOCAL_ANTES_MERGE');
+              await this.backup(p,oldRemote,'REMOTO_ANTES_MERGE');
+              await this.drive.upload(p.split('/').pop(),null,asArrayBuffer(data),action.remoteId);
+              const meta=await this.drive.metadata(action.remoteId);
+              if(meta.md5Checksum!==action.mergedMd5)throw new Error('Merge remoto não passou no readback.');
+              await this.vault.modifyBinary(f,asArrayBuffer(data));
+              await this.checkLocal(p,action.mergedMd5);
+              baseline[p]={md5:action.mergedMd5,remoteId:action.remoteId};
+            }else if(action.type.startsWith('UPLOAD')){
               const {contents}=await this.checkLocal(p,action.localMd5);
               if(action.type==='UPLOAD_NEW'){
                 const parent=await this.ensureRemoteParent(p,snapshot.rootId,dirs);
@@ -146,6 +217,8 @@ const NEXA_SYNC = (() => {
               if(!final)throw new Error('Readback local falhou.');
               baseline[p]={md5:action.remoteMd5,remoteId:action.remoteId};
             }
+            const synchronized=await this.checkLocal(p,baseline[p].md5);
+            await this.storeMergeBase(p,synchronized.contents);
             await this.setData({remoteRootId:snapshot.rootId,baseline});
             report.success.push({type:action.type,path:p});
           }catch(e){
