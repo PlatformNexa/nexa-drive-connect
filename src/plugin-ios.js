@@ -16,8 +16,8 @@ class NexaPlanModal extends Modal {
     for(const b of p.blocked.slice(0,75))list.createEl('p',{text:`BLOQUEADO: ${b.path||'(sem caminho)'} — ${b.reason}`});
     if(p.actions.length+p.blocked.length>150)list.createEl('p',{text:'Prévia resumida. Operações excedentes não são ocultadas na contagem.'});
     new Setting(el).addButton(b=>b.setButtonText('Fechar').onClick(()=>this.close()));
-    if(p.actions.length && !p.blocked.length){
-      new Setting(el).setName('Aplicar alterações revisadas').setDesc('Executa preflight novamente e valida cada escrita.').addButton(b=>b.setButtonText('Confirmar sincronização').setCta().onClick(async()=>{this.close();await this.execute();}));
+    if(!p.blocked.length && (p.actions.length || p.unchanged.length)){
+      new Setting(el).setName(p.actions.length ? 'Aplicar alterações revisadas' : 'Registrar baseline confirmado').setDesc('Executa preflight novamente e valida cada escrita.').addButton(b=>b.setButtonText(p.actions.length ? 'Confirmar sincronização' : 'Confirmar estado inicial').setCta().onClick(async()=>{this.close();await this.execute();}));
     }
     if(p.blocked.length)el.createEl('p',{text:'Conflitos ou arquivos não processáveis: nenhuma escrita será executada neste lote. Resolva antes de sincronizar.'});
   }
