@@ -85,6 +85,7 @@ const NEXA_SYNC = (() => {
     }
     async apply(snapshot,approved){
       if(!approved)throw new Error('Execução requer confirmação explícita do usuário.');
+      if(snapshot.plan.blocked.length)throw new Error('Plano possui conflitos ou arquivos bloqueados. Escrita recusada.');
       if(this.busy)throw new Error('Sincronização já em execução.');
       if(Date.now()-Date.parse(snapshot.createdAt)>60000)throw new Error('Prévia expirada. Execute nova consulta.');
       this.busy=true;

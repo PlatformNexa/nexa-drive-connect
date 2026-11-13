@@ -1,10 +1,10 @@
 # NEXA Drive Connect
 
-Plugin autoral para **Obsidian no iPhone**: replica notas e anexos locais na **pasta `Obsidian` já existente no Google Drive**, usando a API Google Drive diretamente, sem Windows, sem servidor que armazene documentos e sem plugin de sincronização de terceiros.
+Plugin autoral para **Obsidian no iPhone e iPad**: replica notas e anexos locais na **pasta `Obsidian` já existente no Google Drive**, usando a API Google Drive diretamente, sem Windows, sem servidor que armazene documentos e sem plugin de sincronização de terceiros.
 
 ## Recursos incluídos no código
 
-- Login Google no próprio iPhone por OAuth Web + PKCE + callback estático em GitHub Pages.
+- Login Google diretamente no aparelho por OAuth com PKCE e callback estático no GitHub Pages; sem incluir Client Secret no aplicativo.
 - Leitura da árvore de uma pasta **selecionada por ID**, cuja identidade e nome `Obsidian` são verificados antes de sincronizar.
 - Comparação em três vias (local, remoto, última versão sincronizada) com hash por arquivo.
 - Sincronização de criação e edição nos dois sentidos; bloqueio de exclusões e conflitos, sem sobrescrita silenciosa.
@@ -23,14 +23,14 @@ As pastas `.obsidian`, `.git`, `.trash`, `.nexa-connect-recovery`; arquivos Goog
 3. Crie credenciais **OAuth Client ID / Web application**, com Authorized redirect URI exatamente:
    `https://platformnexa.github.io/nexa-drive-connect/callback.html`
 4. Ative GitHub Pages neste repositório, publicando `main` a partir da pasta `/docs` (Settings → Pages → Deploy from a branch). Essa página apenas retorna o **código de autorização de uso único** ao esquema `obsidian://` e não armazena notas. É hospedada no GitHub (que pode ter registros de acesso); o código usa **PKCE**.
-5. No Obsidian, instale o plugin por uma release aprovada no catálogo, abra Configurações → NEXA Drive Connect, informe `Client ID` e `Client Secret` no SecretStorage, faça o login e cole o link ou ID da pasta Google Drive chamada exatamente **Obsidian**.
+5. No Obsidian, instale o plugin por uma release aprovada no catálogo, abra Configurações → NEXA Drive Connect, informe apenas o `Client ID` do Google, toque em **Abrir autorização Google** e faça o login e cole o link ou ID da pasta Google Drive chamada exatamente **Obsidian**.
 6. Faça **prévia**, confira e aprove a sincronização inicial. Só depois habilite o modo automático.
 
 **Importante:** o escopo OAuth `https://www.googleapis.com/auth/drive` concede à aplicação acesso potencial a toda a conta Google. O plugin restringe suas operações à pasta escolhida, mas o próprio Google **não restringe esse token à pasta**. Para primeira homologação, use uma conta de teste e uma pasta sem documentos sensíveis.
 
 ## Status de qualidade
 
-O código compilou e passou testes **offline** de PKCE, árvore, sincronização e conflitos. **Ainda requer testes reais** de OAuth no iPhone e transferência contra pasta Google de laboratório. Não significa publicação no diretório do Obsidian nem certificação de segurança. Nunca ative no acervo oficial antes dessa homologação.
+O código compilou e passou testes **offline** de PKCE, árvore, sincronização e conflitos. **Ainda requer testes reais** de troca de código PKCE sem secret no iPhone e transferência contra pasta Google de laboratório. Não significa publicação no diretório do Obsidian nem certificação de segurança. Nunca ative no acervo oficial antes dessa homologação.
 
 ```bash
 node build.js
@@ -50,3 +50,11 @@ node tests/ios.test.js
 ## Licença
 
 Código-fonte disponibilizado para inspeção, com direitos reservados. Veja LICENSE. Nenhum conteúdo privado do NEXA integra esta distribuição.
+
+
+## Histórico 1.0.1
+
+- Remove Client Secret do plugin móvel e das requisições de token (OAuth PKCE; client_secret documentado como opcional pela Google para a troca de códigos de aplicações Web).
+- Evita popup disparado depois de operação assíncrona no iOS: o usuário toca no link da janela do NEXA, com alternativa de copiar.
+- Motor falha fechado se algum bloqueio for detectado antes da execução.
+- **Limitação:** a troca de código sem secret ainda exige validação real no Google/iOS; se o provedor rejeitar, não incluir segredo no código — revisar o tipo de cliente/fluxo.

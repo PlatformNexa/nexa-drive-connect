@@ -1,4 +1,4 @@
-/* NEXA OAuth web client + PKCE. iOS: static GitHub Pages callback -> obsidian:// URL. */
+/* NEXA OAuth public-client PKCE (no embedded secret). iOS: HTTPS callback -> obsidian://. */
 const NEXA_AUTH = (() => {
   'use strict';
   const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
@@ -21,14 +21,14 @@ const NEXA_AUTH = (() => {
       access_type:'offline',prompt:'consent',code_challenge_method:'S256',code_challenge:await challenge(verifier),state});
     return {verifier,state,expires:Date.now()+15*60*1000,url:AUTH_URL+'?'+q.toString()};
   }
-  async function exchange(request, clientId, clientSecret, code, verifier) {
+  async function exchange(request, clientId, code, verifier) {
     if(!code || !verifier)throw new Error('Código/verificador ausente.');
-    const body=new URLSearchParams({client_id:clientId,client_secret:clientSecret,code,code_verifier:verifier,
+    const body=new URLSearchParams({client_id:clientId,code,code_verifier:verifier,
       grant_type:'authorization_code',redirect_uri:CALLBACK}).toString();
     return tokenRequest(request,body);
   }
-  async function refresh(request,clientId,clientSecret,refreshToken){
-    const body=new URLSearchParams({client_id:clientId,client_secret:clientSecret,refresh_token:refreshToken,grant_type:'refresh_token'}).toString();
+  async function refresh(request,clientId,refreshToken){
+    const body=new URLSearchParams({client_id:clientId,refresh_token:refreshToken,grant_type:'refresh_token'}).toString();
     return tokenRequest(request,body);
   }
   async function tokenRequest(request,body){

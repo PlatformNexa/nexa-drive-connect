@@ -1,6 +1,11 @@
 {
-  "name":"nexa-drive-connect","version":"1.0.0","private":false,
-  "description":"Sincronizador direto do Obsidian iOS para uma pasta Google Drive",
-  "scripts":{"build":"node build.js","test":"node tests/core.test.js && node tests/oauth.test.js && node tests/integration.test.js && node tests/ios.test.js"},
-  "license":"UNLICENSED"
+  "name": "nexa-drive-connect",
+  "version": "1.0.1",
+  "private": false,
+  "description": "Sincronizador direto do Obsidian iOS para uma pasta Google Drive",
+  "scripts": {
+    "build": "node build.js",
+    "test": "node tests/core.test.js && node tests/oauth.test.js && node tests/integration.test.js && node tests/ios.test.js"
+  },
+  "license": "UNLICENSED"
 }

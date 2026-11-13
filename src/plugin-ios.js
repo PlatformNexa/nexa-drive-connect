@@ -26,16 +26,11 @@ class NexaSettingsTab extends PluginSettingTab{
   constructor(app,plugin){super(app,plugin);this.plugin=plugin;}
   display(){
     const p=this.plugin,e=this.containerEl;e.empty();
-    e.createEl('h2',{text:'NEXA Drive Connect — iPhone'});
+    e.createEl('h2',{text:'NEXA Drive Connect — Mobile'});
     e.createEl('p',{text:'Google Drive ↔ cofre local. Sem Windows ou servidor de arquivos. Uma página estática do próprio projeto devolve o código de login (OAuth PKCE).'});
     e.createEl('p',{text:'Atenção: permissão OAuth do Google abrange o Drive da conta. O NEXA limita suas operações à pasta verificada. Nunca use uma conta com documentos confidenciais sem revisar essa permissão.'});
     new Setting(e).setName('Client ID Google').setDesc('ID do cliente OAuth tipo Aplicação web criado no seu Google Cloud.').addText(t=>t.setPlaceholder('...apps.googleusercontent.com').setValue(p.settings.clientId).onChange(async v=>{p.settings.clientId=v.trim();await p.saveSettings();}));
-    new Setting(e).setName('Client Secret Google').setDesc('Armazenado em SecretStorage do Obsidian; não aparece no vault nem no GitHub.').addText(t=>{t.inputEl.type='password';t.setPlaceholder('Cole e toque em Salvar');}).addButton(b=>b.setButtonText('Salvar').onClick(async()=>{
-      const input=e.querySelector('input[placeholder="Cole e toque em Salvar"]');
-      if(!input || !input.value){new Notice('Informe o client secret.');return;}
-      await p.updateSecret({clientSecret:input.value});input.value='';new Notice('Client Secret salvo no armazenamento de segredos.');
-    }));
-    new Setting(e).setName('Login Google').setDesc('Abre o navegador no iPhone. Use o mesmo cliente que configurou no Google Cloud.').addButton(b=>b.setButtonText('Autorizar Google').onClick(()=>p.authorize()));
+    new Setting(e).setName('Login Google').setDesc('Prepara OAuth PKCE e apresenta um link para tocar e abrir o navegador do dispositivo.').addButton(b=>b.setButtonText('Autorizar Google').onClick(()=>p.authorize()));
     e.createEl('p',{text:'URI de retorno obrigatório no Google Cloud: '+NEXA_AUTH.CALLBACK});
     new Setting(e).setName('ID da pasta Obsidian').setDesc('Cole o ID da pasta Google Drive existente ou o URL completo dela. Não cria outra pasta.').addText(t=>t.setPlaceholder('ID ou link da pasta Obsidian').setValue(p.settings.remoteRootId).onChange(async v=>{
       p.settings.remoteRootId=p.extractId(v);await p.saveSettings();
@@ -79,11 +74,22 @@ module.exports=class NexaDriveConnect extends Plugin{
   }
   async authorize(){
     try{
-      if(!this.readCredentials().clientSecret)throw new Error('Primeiro informe o Client Secret nas configurações.');
       this.oauthPending=await NEXA_AUTH.start(this.settings.clientId);
       await this.updateSecret({pendingOAuth:this.oauthPending});
-      window.open(this.oauthPending.url,'_blank');
-      new Notice('Google: conclua o login no navegador.');
+      // Deliberately show a real link. iOS WKWebView can block window.open after await;
+      // tapping the anchor is a separate user gesture, with a copy fallback.
+      const login=new Modal(this.app); const e=login.contentEl;
+      e.createEl('h2',{text:'Conectar conta Google ao NEXA'});
+      e.createEl('p',{text:'Toque no link abaixo para abrir o navegador do dispositivo e autorizar este aparelho. Não compartilhe o link da autorização.'});
+      const pendingUrl=this.oauthPending.url;
+      const a=e.createEl('a',{text:'Abrir autorização Google',href:pendingUrl});
+      a.setAttr('target','_blank'); a.setAttr('rel','noopener noreferrer');
+      new Setting(e).setName('Se o navegador não abrir').setDesc('Copie o link e abra no Safari ou navegador principal do aparelho.').addButton(b=>b.setButtonText('Copiar link').onClick(async()=>{
+        try{await navigator.clipboard.writeText(pendingUrl);new Notice('Link copiado. Abra no Safari.');}
+        catch(err){new Notice('Falha ao copiar o link. Use Abrir autorização Google.');}
+      }));
+      new Setting(e).addButton(b=>b.setButtonText('Fechar').onClick(()=>login.close()));
+      login.open();
     }catch(e){new Notice('NEXA: '+errorMessage(e),9000);}
   }
   async handleOAuth(params){
@@ -93,17 +99,17 @@ module.exports=class NexaDriveConnect extends Plugin{
       if(!pending || Date.now()>pending.expires || !params.code || params.state!==pending.state)throw new Error('Retorno OAuth expirado ou não corresponde à autorização iniciada.');
       this.oauthPending=null;
       const old=this.readCredentials();
-      const received=await NEXA_AUTH.exchange(requestUrl,this.settings.clientId,old.clientSecret,params.code,pending.verifier);
+      const received=await NEXA_AUTH.exchange(requestUrl,this.settings.clientId,params.code,pending.verifier);
       await this.updateSecret({pendingOAuth:null,accessToken:received.access_token,refreshToken:received.refresh_token||old.refreshToken,
         expiresAt:Date.now()+Number(received.expires_in)*1000});
-      new Notice('NEXA: Google autorizado. Agora execute a prévia.');
+      new Notice('NEXA: Google autorizado neste aparelho. Execute a prévia antes de sincronizar.');
     }catch(e){this.oauthPending=null;await this.updateSecret({pendingOAuth:null}).catch(()=>{});new Notice('NEXA OAuth: '+errorMessage(e),10000);}
   }
   async accessToken(){
     const c=this.readCredentials();
     if(c.accessToken && Date.now()<c.expiresAt-90000)return c.accessToken;
-    if(!c.refreshToken || !c.clientSecret || !this.settings.clientId)throw new Error('Faça login no Google nas configurações.');
-    const t=await NEXA_AUTH.refresh(requestUrl,this.settings.clientId,c.clientSecret,c.refreshToken);
+    if(!c.refreshToken || !this.settings.clientId)throw new Error('Faça login no Google nas configurações.');
+    const t=await NEXA_AUTH.refresh(requestUrl,this.settings.clientId,c.refreshToken);
     await this.updateSecret({accessToken:t.access_token,expiresAt:Date.now()+Number(t.expires_in)*1000});
     return t.access_token;
   }
