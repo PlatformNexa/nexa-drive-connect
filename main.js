@@ -452,12 +452,41 @@ const NEXA_SYNC = (() => {
 })();
 
 
+/* src/platform.js */
+/* NEXA Drive Connect — shared platform awareness, safe for Obsidian mobile and desktop. */
+const NEXA_PLATFORM = (() => {
+  'use strict';
+  function classify(flags = {}) {
+    if (flags.isDesktopApp && flags.isWin) return 'windows';
+    if (flags.isDesktopApp) return 'desktop';
+    if (flags.isIosApp) return 'ios';
+    if (flags.isAndroidApp) return 'android';
+    if (flags.isMobileApp) return 'mobile';
+    return 'unknown';
+  }
+  function audit(app, flags = {}) {
+    const target = classify(flags);
+    if (target !== 'windows') return {target, hasLocalPath: false, cloudPathHint: false};
+    const adapter = app && app.vault && app.vault.adapter;
+    let basePath = '';
+    if (adapter && typeof adapter.getBasePath === 'function') {
+      try { basePath = String(adapter.getBasePath() || ''); } catch (_) { basePath = ''; }
+    }
+    // Path hints are NOT a guarantee: a Google Drive virtual mount may be only a drive letter.
+    const cloudPathHint = /(?:^|[\\/])(?:google drive|meu drive|my drive|onedrive|dropbox|icloud drive)(?:[\\/]|$)/i.test(basePath);
+    // Never return or log the user's absolute path.
+    return {target, hasLocalPath: Boolean(basePath), cloudPathHint};
+  }
+  return {classify, audit};
+})();
+
+
 /* src/plugin-ios.js */
 /* NEXA Drive Connect — iPhone direct OAuth/Google Drive adapter, controlled synchronization. */
-const { Plugin, PluginSettingTab, Setting, Modal, Notice, requestUrl } = require('obsidian');
+const { Plugin, PluginSettingTab, Setting, Modal, Notice, requestUrl, Platform } = require('obsidian');
 const NEXA_SECRET_KEY = 'nexa-drive-connect-google-oauth-v1';
 const DEFAULT_SETTINGS={clientId:'',remoteRootId:'',autoSync:false,intervalMinutes:10,
-  lastStatus:'Ainda não sincronizado',remoteRootName:'',baseline:{}};
+  lastStatus:'Ainda não sincronizado',remoteRootName:'',baseline:{},firstSyncApproved:false,boundRootId:''};
 function errorMessage(e){return String(e && e.message || e).replace(/[\r\n]/g,' ').slice(0,220);}
 class NexaPlanModal extends Modal {
   constructor(app, snapshot, execute) {super(app);this.snapshot=snapshot;this.execute=execute;}
@@ -481,8 +510,9 @@ class NexaSettingsTab extends PluginSettingTab{
   constructor(app,plugin){super(app,plugin);this.plugin=plugin;}
   display(){
     const p=this.plugin,e=this.containerEl;e.empty();
-    e.createEl('h2',{text:'NEXA Drive Connect — Mobile'});
-    e.createEl('p',{text:'Google Drive ↔ cofre local. Sem Windows ou servidor de arquivos. Uma página estática do próprio projeto devolve o código de login (OAuth PKCE).'});
+    e.createEl('h2',{text:'NEXA Drive Connect — '+(NEXA_PLATFORM.classify(Platform)==='windows'?'Windows':NEXA_PLATFORM.classify(Platform)==='desktop'?'Desktop':'Mobile')});
+    e.createEl('p',{text:'Google Drive ↔ cofre local, diretamente via API Google. Não requer o aplicativo Google Drive Sync. Autenticação via OAuth PKCE.'});
+    if(NEXA_PLATFORM.classify(Platform)==='windows')new Setting(e).setName('Diagnóstico Windows').setDesc('Detecta indícios de cofre em pasta de sincronização externa; não examina conteúdo nem envia caminho do computador.').addButton(b=>b.setButtonText('Verificar cofre').onClick(()=>p.desktopPreflight()));
     e.createEl('p',{text:'Atenção: permissão OAuth do Google abrange o Drive da conta. O NEXA limita suas operações à pasta verificada. Nunca use uma conta com documentos confidenciais sem revisar essa permissão.'});
     new Setting(e).setName('Client ID Google').setDesc('ID do cliente OAuth tipo Aplicação web criado no seu Google Cloud.').addText(t=>t.setPlaceholder('...apps.googleusercontent.com').setValue(p.settings.clientId).onChange(async v=>{p.settings.clientId=v.trim();await p.saveSettings();}));
     new Setting(e).setName('Login Google').setDesc('Prepara OAuth PKCE e apresenta um link para tocar e abrir o navegador do dispositivo.').addButton(b=>b.setButtonText('Autorizar Google').onClick(()=>p.authorize()));
@@ -509,6 +539,11 @@ module.exports=class NexaDriveConnect extends Plugin{
     this.addCommand({id:'local-audit',name:'Auditar arquivos do cofre local',callback:()=>this.auditLocal()});
     this.registerObsidianProtocolHandler('nexa-drive-connect',(params)=>this.handleOAuth(params));
     this.registerInterval(window.setInterval(()=>this.maybeAutoSync(),60000));
+  }
+  desktopPreflight(){
+    const info=NEXA_PLATFORM.audit(this.app,Platform);
+    if(info.target!=='windows')return;
+    new Notice(info.cloudPathHint?'NEXA: possível pasta já sincronizada. Evite executar dois sincronizadores no mesmo cofre.':'NEXA: verificação local concluída. Confira se outro serviço sincroniza este cofre; caminhos por letra de unidade nem sempre são detectáveis.',12000);
   }
   async saveSettings(){await this.saveData(this.settings);}
   extractId(s){
@@ -573,6 +608,7 @@ module.exports=class NexaDriveConnect extends Plugin{
     async()=>this.settings,
     async d=>{this.settings={...this.settings,...d};await this.saveSettings();});}
   async snapshot(){
+    if(this.settings.boundRootId && this.settings.boundRootId!==this.settings.remoteRootId)throw new Error('Pasta remota alterada após a vinculação: sincronização bloqueada.');
     if(!/^[\w-]{8,}$/.test(this.settings.remoteRootId))throw new Error('Configure o ID da pasta Obsidian existente.');
     const preview=await this.engine().preview(this.settings.remoteRootId);
     if(preview.remote.rootName!=='Obsidian')throw new Error('A pasta remota precisa chamar-se exatamente Obsidian.');
@@ -593,13 +629,14 @@ module.exports=class NexaDriveConnect extends Plugin{
     this.busy=true;
     try{
       const report=await this.engine().apply(snap,true);
+      if(!report.failed.length && !report.blocked.length && (snap.plan.actions.length || snap.plan.unchanged.length)){this.settings.firstSyncApproved=true;this.settings.boundRootId=snap.rootId;}
       this.settings.lastStatus=report.status+': '+report.success.length+' alterações; '+report.failed.length+' falhas';
       await this.saveSettings();new Notice('NEXA: '+this.settings.lastStatus,12000);
     }catch(e){this.settings.lastStatus='FALHOU: '+errorMessage(e);await this.saveSettings();new Notice('NEXA: '+this.settings.lastStatus,12000);}
     finally{this.busy=false;}
   }
   async maybeAutoSync(){
-    if(!this.settings.autoSync || !this.settings.remoteRootId || this.busy || Date.now()<this.nextTick)return;
+    if(!this.settings.autoSync || !this.settings.firstSyncApproved || !this.settings.boundRootId || this.settings.remoteRootId!==this.settings.boundRootId || this.busy || Date.now()<this.nextTick)return;
     this.nextTick=Date.now()+this.settings.intervalMinutes*60000;
     this.busy=true;
     try{

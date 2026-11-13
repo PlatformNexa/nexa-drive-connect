@@ -1,7 +1,7 @@
 name: NEXA Build, Test & Release
 on:
   push:
-    branches: [main]
+    branches: [main, 'feature/windows-desktop']
   pull_request:
   workflow_dispatch:
 permissions:
