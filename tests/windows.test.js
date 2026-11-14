@@ -43,6 +43,7 @@ for(const n of ['core','audit','auth','drive','sync','platform','plugin-ios']){
   const plugin=new PluginClass();
   let previews=0;
   plugin.busy=false;plugin.nextTick=0;
+  plugin.app={workspace:{getLeavesOfType:()=>[]},vault:{read:async()=>''}};
   plugin.settings={autoSync:true,firstSyncApproved:false,boundRootId:'',remoteRootId:'root-123456789',intervalMinutes:5,lastStatus:''};
   plugin.snapshot=async()=>{previews++;return{plan:{blocked:[],actions:[]}};};
   plugin.saveSettings=async()=>{};
