@@ -5,7 +5,7 @@
   "description": "Sincronizador direto do Obsidian móvel e desktop para uma pasta Google Drive",
   "scripts": {
     "build": "node build.js",
-    "test": "node tests/core.test.js && node tests/oauth.test.js && node tests/integration.test.js && node tests/ios.test.js && node tests/windows.test.js && node tests/merge.test.js && node tests/merge-integration.test.js"
+    "test": "node tests/core.test.js && node tests/oauth.test.js && node tests/integration.test.js && node tests/ios.test.js && node tests/windows.test.js && node tests/merge.test.js && node tests/merge-integration.test.js && node tests/three-devices.test.js"
   },
   "license": "UNLICENSED"
 }
