@@ -151,7 +151,7 @@ async function scenario(name,fn){await fn();count.passed++;console.log('PASS 3DE
   assert.equal(ipad.vault.read(path),before+' changed on iPad');
   assert.equal(ipad.state.baseline[path].md5,base);
   const retry=await ipad.sync();
-  assert.equal(retry.failed.length,0);
+  assert.equal(retry.failed.length,0,'RETRY_FAILURE: '+JSON.stringify(retry.failed));
   assert.equal(cloud.read(path),before+' changed on iPad');
   await ios.sync(); await win.sync();
  });
