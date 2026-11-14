@@ -68,3 +68,7 @@
 
 ## Cancelamento da proposta anterior
 A especificação anterior de pedir manualmente a prioridade quando mais de um dispositivo está presente **não é o comportamento padrão desejado**. Manter arbitragem manual apenas para verdadeiros conflitos ou situações não reconciliáveis.
+
+
+## Implementação experimental dos gatilhos (QA)
+A branch registra `file-open`, `vault.modify`, `window focus` e `visibilitychange`, com debounce e limite de consultas. Só funciona após a aprovação inicial, com a mesma pasta remota. Antes de publicar ou baixar, verifica buffers Markdown abertos contra arquivos em disco. **Não substitui automaticamente uma nota Markdown aberta**: adia a atualização e informa `AGUARDANDO: NOTA_ABERTA_AGUARDA_FECHAMENTO`. Protege dados, mas ainda não garante edição imediata da nota recém-atualizada; esse requisito necessita teste real com editor. Não prometer atualização antes de digitar até haver barreira suportada.

@@ -670,12 +670,54 @@ class NexaSettingsTab extends PluginSettingTab{
 }
 module.exports=class NexaDriveConnect extends Plugin{
   async onload(){
-    this.settings=Object.assign({},DEFAULT_SETTINGS,await this.loadData()||{});this.busy=false;this.oauthPending=null;this.nextTick=0;
+    this.settings=Object.assign({},DEFAULT_SETTINGS,await this.loadData()||{});this.busy=false;this.oauthPending=null;this.nextTick=0;this.activityTimer=0;this.lastActivityCheck=0;
     this.addSettingTab(new NexaSettingsTab(this.app,this));
     this.addCommand({id:'preview-sync',name:'Prévia da sincronização com Google Drive',callback:()=>this.syncPreview()});
     this.addCommand({id:'local-audit',name:'Auditar arquivos do cofre local',callback:()=>this.auditLocal()});
     this.registerObsidianProtocolHandler('nexa-drive-connect',(params)=>this.handleOAuth(params));
     this.registerInterval(window.setInterval(()=>this.maybeAutoSync(),60000));
+    // Every callback is managed by the Obsidian plugin lifecycle.
+    this.registerEvent(this.app.workspace.on('file-open',()=>this.requestSyncOnActivity('file-open')));
+    this.registerEvent(this.app.vault.on('modify',file=>{
+      try{if(file?.path && NEXA_CORE.allowedPath(file.path))this.requestSyncOnActivity('modify');}catch(_){}
+    }));
+    this.registerDomEvent(window,'focus',()=>this.requestSyncOnActivity('focus'));
+    this.registerDomEvent(document,'visibilitychange',()=>{if(!document.hidden)this.requestSyncOnActivity('resume');});
+    this.app.workspace.onLayoutReady(()=>this.requestSyncOnActivity('startup'));
+  }
+  onunload(){
+    if(this.activityTimer){window.clearTimeout(this.activityTimer);this.activityTimer=0;}
+  }
+  requestSyncOnActivity(reason){
+    if(!this.settings?.autoSync || !this.settings?.firstSyncApproved ||
+       !this.settings?.boundRootId || this.settings.remoteRootId!==this.settings.boundRootId)return;
+    if(this.activityTimer)window.clearTimeout(this.activityTimer);
+    this.activityTimer=window.setTimeout(()=>{
+      this.activityTimer=0;
+      // Deduplicate focus/file-open/modify bursts, with the ordinary periodic fallback.
+      if(Date.now()-this.lastActivityCheck<15000)return;
+      this.lastActivityCheck=Date.now();
+      this.nextTick=0;
+      this.maybeAutoSync();
+    },reason==='modify'?1800:500);
+  }
+  async editorSafety(plan){
+    const ws=this.app?.workspace;
+    if(typeof ws?.getLeavesOfType!=='function')return {reason:'EDITOR_INDETERMINADO'};
+    for(const leaf of ws.getLeavesOfType('markdown')){
+      const view=leaf?.view,path=view?.file?.path;
+      if(!path)continue;
+      // File buffers not yet saved to vault must never be overwritten by remote sync.
+      if(typeof view.editor?.getValue!=='function'||typeof this.app.vault.read!=='function')
+        return {reason:'EDITOR_NAO_VERIFICAVEL',path};
+      let disk;
+      try{disk=await this.app.vault.read(view.file);}catch(_){return {reason:'EDITOR_NAO_VERIFICAVEL',path};}
+      if(view.editor.getValue()!==disk)return {reason:'EDITOR_COM_ALTERACAO_PENDENTE',path};
+      const affected=plan?.actions?.some(a=>a.path===path&&
+        (a.type==='DOWNLOAD_UPDATE'||a.type==='DOWNLOAD_NEW'||a.type==='MERGE_UPDATE'));
+      if(affected)return {reason:'NOTA_ABERTA_AGUARDA_FECHAMENTO',path};
+    }
+    return null;
   }
   desktopPreflight(){
     const info=NEXA_PLATFORM.audit(this.app,Platform);
@@ -777,9 +819,16 @@ module.exports=class NexaDriveConnect extends Plugin{
     this.nextTick=Date.now()+this.settings.intervalMinutes*60000;
     this.busy=true;
     try{
+      const initialSafety=await this.editorSafety();
+      if(initialSafety){this.settings.lastStatus='AGUARDANDO: '+initialSafety.reason;await this.saveSettings();return;}
       const snap=await this.snapshot();
       if(snap.plan.blocked.length){this.settings.lastStatus='PAUSADO: '+snap.plan.blocked.length+' conflitos/bloqueios';await this.saveSettings();return;}
+      const safety=await this.editorSafety(snap.plan);
+      if(safety){this.settings.lastStatus='AGUARDANDO: '+safety.reason;await this.saveSettings();return;}
       if(snap.plan.actions.length){
+        // Re-check editor just before writing. Concurrent changes still require engine preflight.
+        const beforeApply=await this.editorSafety(snap.plan);
+        if(beforeApply){this.settings.lastStatus='AGUARDANDO: '+beforeApply.reason;await this.saveSettings();return;}
         const r=await this.engine().apply(snap,true);
         this.settings.lastStatus=r.status+': '+r.success.length+' operações; '+r.failed.length+' falhas';
         await this.saveSettings();
