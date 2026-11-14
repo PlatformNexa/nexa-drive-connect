@@ -23,3 +23,6 @@ Quando um Markdown ou outro arquivo apresentar `ALTERACAO_CONCORRENTE` ou `PRIME
 3. **Preservar ambas**: criar dois backups e deixar o conflito pendente, sem escolher versão oficial.
 
 Antes de qualquer opção, o motor consulta novamente o Drive e o cofre local e compara hashes/ID, guarda cópias independentes das duas fontes em `.nexa-connect-recovery` e só então altera o destino. A nota aberta é bloqueada para evitar perda de buffers. A resolução não é atômica em nível de Google Drive. **Esta interface está em QA e ainda não foi validada em dispositivo físico.** Não ativar no acervo oficial.
+
+### Preview com diferenças destacadas (LAB)
+A interface apresenta duas colunas com número da linha e indicação textual +, − ou ≠, realçando os trechos alterados sem inserir HTML ou executar conteúdo das notas. A prévia visual limita-se a 350 linhas e 90.000 caracteres por versão; se ultrapassar os limites, o sistema informa a impossibilidade do preview detalhado e mantém ambas as versões protegidas. A escolha de versão e a verificação de concorrência continuam independentes do preview. Em QA físico.

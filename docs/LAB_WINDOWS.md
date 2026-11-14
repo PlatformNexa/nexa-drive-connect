@@ -21,3 +21,6 @@ Conflitos ou erros na prévia; arquivos reais no plano; falha de login; alteraç
 
 ## Comparação de versões (experimental)
 Se uma mesma nota for alterada nas duas pontas, abra **Analisar alterações → Comparar versões**. A janela mostra o texto do aparelho e o texto do Drive; depois você escolhe qual preservar como principal ou mantém ambas em backups para decidir depois. Para resolução, feche a nota Markdown no editor; o plugin não substitui uma nota aberta. **Teste somente com arquivos fictícios.**
+
+### Linhas modificadas
+O botão **Comparar versões** agora exibe as linhas da cópia local e as do Drive lado a lado, com os símbolos +, − e ≠ e cor de fundo quando aplicável. Se o arquivo for grande, a interface não simula uma comparação parcial como se fosse integral: informa o limite e permite preservar as duas versões.

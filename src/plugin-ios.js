@@ -34,20 +34,48 @@ class NexaConflictReviewModal extends Modal {
     el.createEl('h2',{text:'NEXA — Comparar versões'});
     el.createEl('p',{text:'Arquivo: '+v.path+' · Motivo: '+v.reason});
     el.createEl('p',{text:'As duas versões serão preservadas em backups locais antes de qualquer decisão. A opção Manter ambas não resolve o conflito; você poderá escolher depois.'});
-    const grid=el.createEl('div');
-    grid.style.display='grid';grid.style.gridTemplateColumns='repeat(2,minmax(0,1fr))';grid.style.gap='12px';
-    for(const item of [{name:'Versão deste aparelho',data:v.localData,hash:v.localMd5},{name:'Versão do Google Drive',data:v.remoteData,hash:v.remoteMd5}]){
-      const section=grid.createEl('section');
-      section.createEl('h3',{text:item.name});
-      section.createEl('p',{text:'MD5: '+item.hash});
-      let text;
-      try{
-        const b=new Uint8Array(item.data);
-        text=NEXA_MERGE.decode(b);
-        if(text.length>7000)text=text.slice(0,7000)+'\n[… prévia limitada a 7.000 caracteres]';
-      }catch(_){text='Prévia textual indisponível (arquivo binário, inválido ou maior que 256 KiB). As versões serão preservadas.';}
-      const pre=section.createEl('pre',{text});
-      pre.style.maxHeight='42vh';pre.style.overflow='auto';pre.style.whiteSpace='pre-wrap';pre.style.overflowWrap='anywhere';
+    let left,right,previewError='';
+    try{
+      left=NEXA_MERGE.decode(new Uint8Array(v.localData));
+      right=NEXA_MERGE.decode(new Uint8Array(v.remoteData));
+    }catch(_){previewError='Prévia textual indisponível: arquivo binário, conteúdo inválido ou acima de 256 KiB.';}
+    let diff;
+    if(!previewError){
+      diff=NEXA_DIFF.compare(left,right);
+      if(!diff.available)previewError=diff.reason;
+    }
+    if(previewError)el.createEl('p',{text:previewError+' As duas versões continuam identificadas e preserváveis.'});
+    const info=el.createEl('div');
+    info.createEl('p',{text:'Aparelho — MD5 '+v.localMd5});
+    info.createEl('p',{text:'Google Drive — MD5 '+v.remoteMd5});
+    if(diff?.available){
+      el.createEl('p',{text:diff.changes+' linhas de comparação com diferenças. Cor e símbolos (+/−/≠) indicam alterações; sem realce significa conteúdo igual.'});
+      const scroll=el.createEl('div');
+      scroll.style.maxHeight='45vh';scroll.style.overflow='auto';
+      scroll.style.border='1px solid var(--background-modifier-border)';
+      const header=scroll.createEl('div');
+      header.style.display='grid';header.style.gridTemplateColumns='1fr 1fr';
+      header.style.fontWeight='600';header.style.position='sticky';header.style.top='0';
+      header.style.background='var(--background-primary)';
+      header.createEl('div',{text:'Versão deste aparelho'});
+      header.createEl('div',{text:'Versão do Google Drive'});
+      for(const row of diff.rows){
+        const line=scroll.createEl('div');
+        line.style.display='grid';line.style.gridTemplateColumns='1fr 1fr';
+        for(const cell of [row.left,row.right]){
+          const side=line.createEl('div');
+          side.style.fontFamily='var(--font-monospace)';
+          side.style.whiteSpace='pre-wrap';side.style.overflowWrap='anywhere';
+          side.style.padding='2px 6px';
+          side.style.borderBottom='1px solid var(--background-modifier-border)';
+          const type=cell?.type||'empty';
+          side.style.background=type==='added'?'var(--background-modifier-success)':
+            type==='removed'?'var(--background-modifier-error)':
+            type==='modified'?'var(--background-modifier-hover)':'transparent';
+          const mark=type==='added'?'+':type==='removed'?'−':type==='modified'?'≠':' ';
+          side.createEl('span',{text:cell?mark+' '+cell.line+'  '+cell.text:' '});
+        }
+      }
     }
     el.createEl('p',{text:'Atenção: uma alteração remota feita enquanto você escolhe pode cancelar a operação. A decisão não é um bloqueio exclusivo do Drive.'});
     new Setting(el).setName('Manter as duas versões').setDesc('Salva ambas em backups, não altera a nota nem o Drive.').addButton(b=>b.setButtonText('Preservar ambas').onClick(()=>this.confirm('AMBAS')));
