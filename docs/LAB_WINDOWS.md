@@ -18,3 +18,6 @@ Conflitos ou erros na prévia; arquivos reais no plano; falha de login; alteraç
 - Quando a nota Markdown estiver aberta, a atualização automática é adiada por segurança para evitar sobrescrever o buffer do editor.
 - Sem atualização em background com Obsidian fechado.
 - O GitHub Actions gera o pacote temporário por 14 dias, sem publicar outra release ou interferir na revisão do iPhone 1.0.1.
+
+## Comparação de versões (experimental)
+Se uma mesma nota for alterada nas duas pontas, abra **Analisar alterações → Comparar versões**. A janela mostra o texto do aparelho e o texto do Drive; depois você escolhe qual preservar como principal ou mantém ambas em backups para decidir depois. Para resolução, feche a nota Markdown no editor; o plugin não substitui uma nota aberta. **Teste somente com arquivos fictícios.**

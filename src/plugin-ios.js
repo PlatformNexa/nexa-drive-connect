@@ -5,7 +5,7 @@ const DEFAULT_SETTINGS={clientId:'',remoteRootId:'',autoSync:false,intervalMinut
   lastStatus:'Ainda não sincronizado',remoteRootName:'',baseline:{},firstSyncApproved:false,boundRootId:''};
 function errorMessage(e){return String(e && e.message || e).replace(/[\r\n]/g,' ').slice(0,220);}
 class NexaPlanModal extends Modal {
-  constructor(app, snapshot, execute) {super(app);this.snapshot=snapshot;this.execute=execute;}
+  constructor(app, snapshot, execute, plugin) {super(app);this.snapshot=snapshot;this.execute=execute;this.plugin=plugin;}
   onOpen(){
     const el=this.contentEl;el.empty();const p=this.snapshot.plan;
     el.createEl('h2',{text:'NEXA — Prévia de sincronização'});
@@ -13,13 +13,58 @@ class NexaPlanModal extends Modal {
     el.createEl('p',{text:'Nenhuma exclusão é propagada. O primeiro espelhamento divergente é bloqueado. Backups locais são criados antes de substituições.'});
     const list=el.createEl('div');list.style.maxHeight='40vh';list.style.overflowY='auto';
     for(const a of p.actions.slice(0,75))list.createEl('p',{text:`${a.type==='MERGE_UPDATE'?'MESCLAR (mudanças independentes)':a.type}: ${a.path}`});
-    for(const b of p.blocked.slice(0,75))list.createEl('p',{text:`BLOQUEADO: ${b.path||'(sem caminho)'} — ${b.reason}`});
+    for(const b of p.blocked.slice(0,75)){
+      const row=list.createEl('div');
+      row.createEl('span',{text:`BLOQUEADO: ${b.path||'(sem caminho)'} — ${b.reason}`});
+      if(b.path&&(b.reason==='ALTERACAO_CONCORRENTE'||b.reason==='PRIMEIRA_SINC_DIVERGENTE'))
+        new Setting(row).addButton(btn=>btn.setButtonText('Comparar versões').onClick(()=>this.plugin.openConflictReview(this.snapshot,b.path)));
+    }
     if(p.actions.length+p.blocked.length>150)list.createEl('p',{text:'Prévia resumida. Operações excedentes não são ocultadas na contagem.'});
     new Setting(el).addButton(b=>b.setButtonText('Fechar').onClick(()=>this.close()));
     if(!p.blocked.length && (p.actions.length || p.unchanged.length)){
       new Setting(el).setName(p.actions.length ? 'Aplicar alterações revisadas' : 'Registrar baseline confirmado').setDesc('Executa preflight novamente e valida cada escrita.').addButton(b=>b.setButtonText(p.actions.length ? 'Confirmar sincronização' : 'Confirmar estado inicial').setCta().onClick(async()=>{this.close();await this.execute();}));
     }
     if(p.blocked.length)el.createEl('p',{text:'Conflitos ou arquivos não processáveis: nenhuma escrita será executada neste lote. Resolva antes de sincronizar.'});
+  }
+}
+class NexaConflictReviewModal extends Modal {
+  constructor(plugin,versions){super(plugin.app);this.plugin=plugin;this.versions=versions;}
+  onOpen(){
+    const el=this.contentEl;el.empty();const v=this.versions;
+    el.createEl('h2',{text:'NEXA — Comparar versões'});
+    el.createEl('p',{text:'Arquivo: '+v.path+' · Motivo: '+v.reason});
+    el.createEl('p',{text:'As duas versões serão preservadas em backups locais antes de qualquer decisão. A opção Manter ambas não resolve o conflito; você poderá escolher depois.'});
+    const grid=el.createEl('div');
+    grid.style.display='grid';grid.style.gridTemplateColumns='repeat(2,minmax(0,1fr))';grid.style.gap='12px';
+    for(const item of [{name:'Versão deste aparelho',data:v.localData,hash:v.localMd5},{name:'Versão do Google Drive',data:v.remoteData,hash:v.remoteMd5}]){
+      const section=grid.createEl('section');
+      section.createEl('h3',{text:item.name});
+      section.createEl('p',{text:'MD5: '+item.hash});
+      let text;
+      try{
+        const b=new Uint8Array(item.data);
+        text=NEXA_MERGE.decode(b);
+        if(text.length>7000)text=text.slice(0,7000)+'\n[… prévia limitada a 7.000 caracteres]';
+      }catch(_){text='Prévia textual indisponível (arquivo binário, inválido ou maior que 256 KiB). As versões serão preservadas.';}
+      const pre=section.createEl('pre',{text});
+      pre.style.maxHeight='42vh';pre.style.overflow='auto';pre.style.whiteSpace='pre-wrap';pre.style.overflowWrap='anywhere';
+    }
+    el.createEl('p',{text:'Atenção: uma alteração remota feita enquanto você escolhe pode cancelar a operação. A decisão não é um bloqueio exclusivo do Drive.'});
+    new Setting(el).setName('Manter as duas versões').setDesc('Salva ambas em backups, não altera a nota nem o Drive.').addButton(b=>b.setButtonText('Preservar ambas').onClick(()=>this.confirm('AMBAS')));
+    new Setting(el).setName('Escolher versão deste aparelho').setDesc('Publica a versão local no Drive; o conteúdo remoto é preservado antes em backup.').addButton(b=>b.setButtonText('Usar versão local').onClick(()=>this.confirm('LOCAL')));
+    new Setting(el).setName('Escolher versão do Drive').setDesc('Atualiza a nota local; o conteúdo local anterior é preservado antes em backup.').addButton(b=>b.setButtonText('Usar versão do Drive').onClick(()=>this.confirm('DRIVE')));
+    new Setting(el).addButton(b=>b.setButtonText('Cancelar').onClick(()=>this.close()));
+  }
+  confirm(choice){
+    const modal=new Modal(this.app);const el=modal.contentEl;
+    const names={AMBAS:'preservar as duas versões sem alterar o arquivo',LOCAL:'publicar a versão local no Drive',DRIVE:'substituir a cópia local pela versão do Drive'};
+    el.createEl('h3',{text:'Confirmar sua escolha'});
+    el.createEl('p',{text:'Você escolheu '+names[choice]+'. Os dois conteúdos serão preservados em backups antes de qualquer substituição.'});
+    new Setting(el).addButton(b=>b.setButtonText('Voltar').onClick(()=>modal.close()));
+    new Setting(el).addButton(b=>b.setCta().setButtonText('Confirmar decisão').onClick(async()=>{
+      modal.close();this.close();await this.plugin.applyConflictChoice(this.versions,choice);
+    }));
+    modal.open();
   }
 }
 class NexaSettingsTab extends PluginSettingTab{
@@ -177,7 +222,32 @@ module.exports=class NexaDriveConnect extends Plugin{
     this.busy=true;
     try{
       const snap=await this.snapshot();
-      new NexaPlanModal(this.app,snap,()=>this.applySnapshot(snap)).open();
+      new NexaPlanModal(this.app,snap,()=>this.applySnapshot(snap),this).open();
+    }catch(e){new Notice('NEXA: '+errorMessage(e),12000);}
+    finally{this.busy=false;}
+  }
+  async openConflictReview(snap,path){
+    if(this.busy){new Notice('NEXA: sincronização em andamento.');return;}
+    this.busy=true;
+    try{
+      if(snap.rootId!==this.settings.remoteRootId)throw new Error('Pasta remota alterada.');
+      const versions=await this.engine().conflictVersions(snap.rootId,path);
+      new NexaConflictReviewModal(this,versions).open();
+    }catch(e){new Notice('NEXA: '+errorMessage(e),12000);}
+    finally{this.busy=false;}
+  }
+  async applyConflictChoice(versions,choice){
+    if(this.busy){new Notice('NEXA: outra operação em andamento.');return;}
+    this.busy=true;
+    try{
+      if(versions.rootId!==this.settings.remoteRootId)throw new Error('Pasta remota alterada.');
+      // Never write to a note that is currently open or has an uncommitted editor buffer.
+      const safety=await this.editorSafety({actions:[{type:'DOWNLOAD_UPDATE',path:versions.path}]});
+      if(safety)throw new Error('Feche a nota antes de resolver o conflito: '+safety.reason);
+      const result=await this.engine().resolveConflict(versions,choice);
+      this.settings.lastStatus=result.status+' · '+versions.path;
+      await this.saveSettings();
+      new Notice('NEXA: '+this.settings.lastStatus,12000);
     }catch(e){new Notice('NEXA: '+errorMessage(e),12000);}
     finally{this.busy=false;}
   }

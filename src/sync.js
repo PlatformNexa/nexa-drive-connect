@@ -126,6 +126,70 @@ const NEXA_SYNC = (() => {
       if(!meta || meta.trashed || meta.md5Checksum!==expected || !Array.isArray(meta.parents) || !meta.parents.includes(expectedParentId))throw new Error('Arquivo remoto alterado ou movido após prévia. Interrompido.');
       return meta;
     }
+    async conflictVersions(rootId,path){
+      path=NEXA_CORE.normalizePath(path);
+      if(!NEXA_CORE.allowedPath(path))throw new Error('Caminho fora do escopo.');
+      const snapshot=await this.preview(rootId);
+      const conflict=snapshot.plan.blocked.find(x=>x.path===path&&
+        (x.reason==='ALTERACAO_CONCORRENTE'||x.reason==='PRIMEIRA_SINC_DIVERGENTE'));
+      if(!conflict)throw new Error('Conflito não está disponível; atualize a prévia.');
+      const local=snapshot.local.files.find(x=>x.path===path);
+      const remote=snapshot.remote.files.find(x=>x.path===path);
+      if(!local||!remote)throw new Error('Ambas as versões precisam existir.');
+      const {contents}=await this.checkLocal(path,local.md5);
+      await this.checkRemote(remote.id,remote.md5,remote.parentId);
+      const remoteData=await this.drive.download(remote.id);
+      if(NEXA_CORE.md5(bytes(remoteData))!==remote.md5)throw new Error('A versão do Drive mudou durante a leitura.');
+      const state=(await this.getData())||{};
+      return {path,rootId,reason:conflict.reason,
+        localMd5:local.md5,remoteMd5:remote.md5,remoteId:remote.id,remoteParentId:remote.parentId,
+        localData:asArrayBuffer(contents),remoteData:asArrayBuffer(remoteData),
+        ancestorMd5:state.baseline?.[path]?.md5||null};
+    }
+    async resolveConflict(versions,choice){
+      if(!['LOCAL','DRIVE','AMBAS'].includes(choice))throw new Error('Escolha de conflito inválida.');
+      if(this.busy)throw new Error('Outra operação está ativa.');
+      this.busy=true;
+      try{
+        const p=NEXA_CORE.normalizePath(versions.path);
+        if(!NEXA_CORE.allowedPath(p))throw new Error('Caminho fora do escopo.');
+        const rootId=versions.rootId;
+        const current=await this.preview(rootId,true);
+        const blocked=current.plan.blocked.find(x=>x.path===p&&
+          (x.reason==='ALTERACAO_CONCORRENTE'||x.reason==='PRIMEIRA_SINC_DIVERGENTE'));
+        const r=current.remote.files.find(x=>x.path===p);
+        const l=current.local.files.find(x=>x.path===p);
+        if(!blocked||!l||!r||l.md5!==versions.localMd5||r.md5!==versions.remoteMd5||r.id!==versions.remoteId||
+          r.parentId!==versions.remoteParentId)throw new Error('As versões mudaram; abra uma nova comparação.');
+        const {f,contents}=await this.checkLocal(p,l.md5);
+        await this.checkRemote(r.id,r.md5,r.parentId);
+        const remoteBytes=await this.drive.download(r.id);
+        if(NEXA_CORE.md5(bytes(remoteBytes))!==r.md5)throw new Error('O Drive mudou durante a resolução.');
+        // Always preserve both before a decision. Recovery files never go into the Drive.
+        const localBackup=await this.backup(p,contents,'CONFLITO_LOCAL');
+        const remoteBackup=await this.backup(p,remoteBytes,'CONFLITO_DRIVE');
+        if(choice==='AMBAS')return {choice,status:'VERSOES_PRESERVADAS_SEM_SINCRONIZAR',localBackup,remoteBackup};
+        const state=(await this.getData())||{};
+        if(state.remoteRootId&&state.remoteRootId!==rootId)throw new Error('Vínculo da pasta mudou.');
+        const baseline={...(state.baseline||{})};
+        if(choice==='LOCAL'){
+          await this.checkRemote(r.id,r.md5,r.parentId);
+          await this.drive.upload(p.split('/').pop(),null,asArrayBuffer(contents),r.id);
+          const meta=await this.drive.metadata(r.id);
+          if(meta.md5Checksum!==l.md5)throw new Error('A versão local não foi confirmada no Drive.');
+          baseline[p]={md5:l.md5,remoteId:r.id};
+          await this.storeMergeBase(p,contents);
+        }else{
+          await this.checkRemote(r.id,r.md5,r.parentId);
+          await this.vault.modifyBinary(f,asArrayBuffer(remoteBytes));
+          await this.checkLocal(p,r.md5);
+          baseline[p]={md5:r.md5,remoteId:r.id};
+          await this.storeMergeBase(p,remoteBytes);
+        }
+        await this.setData({remoteRootId:rootId,baseline});
+        return {choice,status:'RESOLVIDO_COM_BACKUPS',localBackup,remoteBackup};
+      }finally{this.busy=false;}
+    }
     async ensureRemoteParent(path,rootId,dirs){
       const pieces=path.split('/').slice(0,-1);let parent=rootId, prefix='';
       for(const p of pieces){

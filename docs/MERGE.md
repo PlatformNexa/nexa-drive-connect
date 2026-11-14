@@ -14,3 +14,12 @@ Testes automatizados abrangem conflitos sobrepostos/disjuntos, falta de ancestra
 
 ### Retomada após falha parcial
 O motor preserva o backup do primeiro envio interrompido e cria um nome distinto ao repetir a operação no mesmo milissegundo. O novo arquivo é verificado por leitura e hash; nenhum backup anterior é apagado nem sobrescrito. Em caso de alteração remota efetivada antes da falha, o NEXA deve reconsultar o Drive e bloquear/conciliar, nunca assumir que a primeira tentativa não gravou.
+
+
+## Resolução manual por prévia — candidato LAB
+Quando um Markdown ou outro arquivo apresentar `ALTERACAO_CONCORRENTE` ou `PRIMEIRA_SINC_DIVERGENTE`, a janela de prévia traz o botão **Comparar versões**. O painel apresenta o conteúdo **local** e o conteúdo **Google Drive** lado a lado, com hashes; documentos não textuais ou acima de 256 KiB mostram somente identificação/hash, não conteúdo. O usuário tem três escolhas, com confirmação separada:
+1. **Usar versão local**: copiar a versão local para o Drive, sem apagar seu backup remoto.
+2. **Usar versão do Drive**: substituir a cópia local, sem apagar seu backup local.
+3. **Preservar ambas**: criar dois backups e deixar o conflito pendente, sem escolher versão oficial.
+
+Antes de qualquer opção, o motor consulta novamente o Drive e o cofre local e compara hashes/ID, guarda cópias independentes das duas fontes em `.nexa-connect-recovery` e só então altera o destino. A nota aberta é bloqueada para evitar perda de buffers. A resolução não é atômica em nível de Google Drive. **Esta interface está em QA e ainda não foi validada em dispositivo físico.** Não ativar no acervo oficial.
