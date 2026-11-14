@@ -5,7 +5,7 @@ vm.runInContext(fs.readFileSync('src/diff.js','utf8')+';this.diff=NEXA_DIFF;',co
 const d=context.diff;
 const equal=d.compare('a\nb\nc','a\nb\nc');
 assert.equal(equal.available,true);assert.equal(equal.changes,0);
-assert.deepEqual(equal.rows.map(r=>r.left.type),['same','same','same']);
+assert.equal(Array.from(equal.rows,r=>r.left.type).join(','),'same,same,same');
 const modified=d.compare('a\nLED 3000K\nfinal','a\nLED 4000K\nfinal');
 assert.equal(modified.changes,1);assert.equal(modified.rows[1].left.type,'modified');
 assert.equal(modified.rows[1].right.type,'modified');
