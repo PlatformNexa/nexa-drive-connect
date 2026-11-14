@@ -44,6 +44,7 @@ const Plugin=runtime.module.exports;
  assert.equal(active.reason,'NOTA_ABERTA_AGUARDA_FECHAMENTO');
  assert.equal(await plugin.editorSafety({actions:[{type:'UPLOAD_UPDATE',path:'Projeto.md'}]}),null);
  plugin.app.workspace.getLeavesOfType=()=>[];
+ delete plugin.maybeAutoSync; // Restore real SyncEngine orchestration after debounce-unit stub.
  plugin.settings.intervalMinutes=5;
  plugin.settings.lastStatus='';
  plugin.busy=false;plugin.nextTick=0;
