@@ -94,7 +94,13 @@ const NEXA_SYNC = (() => {
         dir=dir?dir+'/'+part:part;
         if(!(await this.vault.adapter.exists(dir)))await this.vault.adapter.mkdir(dir);
       }
-      if(await this.vault.adapter.exists(target))throw new Error('Backup já existe; recusando sobrescrever.');
+      // A retry after a failed upload can occur in the same millisecond.
+      // Keep every previous backup; choose an unused name instead of overwriting.
+      const baseTarget=target;
+      for(let attempt=1;await this.vault.adapter.exists(target);attempt++){
+        if(attempt>1000)throw new Error('Espaço de nomes dos backups esgotado.');
+        target=baseTarget+'.retry-'+attempt;
+      }
       await this.vault.adapter.writeBinary(target,asArrayBuffer(data));
       const read=await this.vault.adapter.readBinary(target);
       if(NEXA_CORE.md5(bytes(read))!==NEXA_CORE.md5(bytes(data)))throw new Error('Backup não validado; escrita bloqueada.');

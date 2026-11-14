@@ -10,3 +10,7 @@ Antes de aplicar merge, preserva backups locais e remotos, confere hash de ambas
 **Aviso**: a API Drive + sistema de arquivos não oferecem transação distribuída atômica. Falhas entre escrita remota e local são bloqueadas e exigem inspeção das cópias e do histórico. Outro dispositivo pode atualizar o mesmo arquivo durante uma operação: precisa de testes reais de concorrência antes de homologação.
 ## QA
 Testes automatizados abrangem conflitos sobrepostos/disjuntos, falta de ancestral, segurança de dados de origem e backups. Ainda precisa de homologação real Windows/iOS/Drive. Não mesclar à main durante revisão da 1.0.1.
+
+
+### Retomada após falha parcial
+O motor preserva o backup do primeiro envio interrompido e cria um nome distinto ao repetir a operação no mesmo milissegundo. O novo arquivo é verificado por leitura e hash; nenhum backup anterior é apagado nem sobrescrito. Em caso de alteração remota efetivada antes da falha, o NEXA deve reconsultar o Drive e bloquear/conciliar, nunca assumir que a primeira tentativa não gravou.
