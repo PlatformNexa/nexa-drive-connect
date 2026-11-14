@@ -1,11 +1,11 @@
 {
   "name": "nexa-drive-connect",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "private": false,
-  "description": "Sincronizador direto do Obsidian móvel e desktop para uma pasta Google Drive",
+  "description": "Candidato LAB do NEXA Drive Connect para teste Windows e mobile",
   "scripts": {
     "build": "node build.js",
-    "test": "node tests/core.test.js && node tests/oauth.test.js && node tests/integration.test.js && node tests/ios.test.js && node tests/windows.test.js && node tests/merge.test.js && node tests/merge-integration.test.js && node tests/three-devices.test.js && node tests/activity.test.js"
+    "test": "node tests/core.test.js && node tests/oauth.test.js && node tests/integration.test.js && node tests/ios.test.js && node tests/windows.test.js && node tests/merge.test.js && node tests/merge-integration.test.js && node tests/three-devices.test.js && node tests/activity.test.js && node tests/lab-guard.test.js"
   },
   "license": "UNLICENSED"
 }

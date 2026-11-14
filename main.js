@@ -653,14 +653,14 @@ class NexaSettingsTab extends PluginSettingTab{
   constructor(app,plugin){super(app,plugin);this.plugin=plugin;}
   display(){
     const p=this.plugin,e=this.containerEl;e.empty();
-    e.createEl('h2',{text:'NEXA Drive Connect — '+(NEXA_PLATFORM.classify(Platform)==='windows'?'Windows':NEXA_PLATFORM.classify(Platform)==='desktop'?'Desktop':'Mobile')});
-    e.createEl('p',{text:'Google Drive ↔ cofre local, diretamente via API Google. Não requer o aplicativo Google Drive Sync. Autenticação via OAuth PKCE.'});
+    e.createEl('h2',{text:'NEXA Drive Connect LAB — '+(NEXA_PLATFORM.classify(Platform)==='windows'?'Windows':NEXA_PLATFORM.classify(Platform)==='desktop'?'Desktop':'Mobile')});
+    e.createEl('p',{text:'MODO LAB WINDOWS: somente a pasta Google Drive NEXA_DRIVE_CONNECT_LAB é aceita; o acervo oficial Obsidian fica bloqueado. Sem Drive Sync; autenticação OAuth PKCE.'});
     if(NEXA_PLATFORM.classify(Platform)==='windows')new Setting(e).setName('Diagnóstico Windows').setDesc('Detecta indícios de cofre em pasta de sincronização externa; não examina conteúdo nem envia caminho do computador.').addButton(b=>b.setButtonText('Verificar cofre').onClick(()=>p.desktopPreflight()));
     e.createEl('p',{text:'Atenção: permissão OAuth do Google abrange o Drive da conta. O NEXA limita suas operações à pasta verificada. Nunca use uma conta com documentos confidenciais sem revisar essa permissão.'});
     new Setting(e).setName('Client ID Google').setDesc('ID do cliente OAuth tipo Aplicação web criado no seu Google Cloud.').addText(t=>t.setPlaceholder('...apps.googleusercontent.com').setValue(p.settings.clientId).onChange(async v=>{p.settings.clientId=v.trim();await p.saveSettings();}));
     new Setting(e).setName('Login Google').setDesc('Prepara OAuth PKCE e apresenta um link para tocar e abrir o navegador do dispositivo.').addButton(b=>b.setButtonText('Autorizar Google').onClick(()=>p.authorize()));
     e.createEl('p',{text:'URI de retorno obrigatório no Google Cloud: '+NEXA_AUTH.CALLBACK});
-    new Setting(e).setName('ID da pasta Obsidian').setDesc('Cole o ID da pasta Google Drive existente ou o URL completo dela. Não cria outra pasta.').addText(t=>t.setPlaceholder('ID ou link da pasta Obsidian').setValue(p.settings.remoteRootId).onChange(async v=>{
+    new Setting(e).setName('ID da pasta NEXA_DRIVE_CONNECT_LAB').setDesc('Cole o ID ou URL da pasta remota de laboratório. O plugin recusa a pasta oficial Obsidian.').addText(t=>t.setPlaceholder('ID ou link da pasta Obsidian').setValue(p.settings.remoteRootId).onChange(async v=>{
       p.settings.remoteRootId=p.extractId(v);await p.saveSettings();
     }));
     new Setting(e).setName('Prévia e sincronização').setDesc('Compara local e remoto. Só grava após confirmação, com backups e readback.').addButton(b=>b.setButtonText('Analisar alterações').setCta().onClick(()=>p.syncPreview()));
@@ -796,7 +796,7 @@ module.exports=class NexaDriveConnect extends Plugin{
     if(this.settings.boundRootId && this.settings.boundRootId!==this.settings.remoteRootId)throw new Error('Pasta remota alterada após a vinculação: sincronização bloqueada.');
     if(!/^[\w-]{8,}$/.test(this.settings.remoteRootId))throw new Error('Configure o ID da pasta Obsidian existente.');
     const preview=await this.engine().preview(this.settings.remoteRootId);
-    if(preview.remote.rootName!=='Obsidian')throw new Error('A pasta remota precisa chamar-se exatamente Obsidian.');
+    if(preview.remote.rootName!=='NEXA_DRIVE_CONNECT_LAB')throw new Error('MODO LAB: pasta remota não autorizada. Use exclusivamente NEXA_DRIVE_CONNECT_LAB; acervo Obsidian oficial bloqueado.');
     return preview;
   }
   async syncPreview(){
