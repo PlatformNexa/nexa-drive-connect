@@ -1,9 +1,9 @@
 {
   "id": "nexa-drive-connect",
   "name": "NEXA Drive Connect",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "minAppVersion": "1.11.4",
-  "description": "Sincronize notas locais com uma pasta escolhida do Google Drive, com prévia e proteção contra conflitos.",
+  "description": "Candidato de laboratório: teste seguro de sincronização Google Drive no Obsidian Windows/iOS.",
   "author": "NEXA",
   "isDesktopOnly": false
 }

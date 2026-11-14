@@ -1,7 +1,7 @@
 name: NEXA Build, Test & Release
 on:
   push:
-    branches: [main]
+    branches: [main, 'feature/windows-desktop']
   pull_request:
   workflow_dispatch:
 permissions:
@@ -19,6 +19,32 @@ jobs:
       - run: node --check main.js
       - name: Compare compiled output with published source
         run: git diff --exit-code -- main.js
+      - name: Export desktop candidate binaries
+        if: github.ref == 'refs/heads/feature/windows-desktop'
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEXA-Drive-Connect-Windows-Candidate
+          path: |
+            main.js
+            manifest.json
+          retention-days: 14
+      - name: Package isolated Obsidian Windows lab vault
+        if: github.ref == 'refs/heads/feature/windows-desktop'
+        run: |
+          set -euo pipefail
+          LAB="$RUNNER_TEMP/NEXA_WINDOWS_LAB"
+          mkdir -p "$LAB/.obsidian/plugins/nexa-drive-connect"
+          cp main.js manifest.json "$LAB/.obsidian/plugins/nexa-drive-connect/"
+          printf '%s\n' '["nexa-drive-connect"]' > "$LAB/.obsidian/community-plugins.json"
+          printf '%s\n' '# NEXA Windows LAB' '' 'Apenas testes com arquivos fictícios.' '' 'Este cofre não é seu acervo oficial do Google Drive.' > "$LAB/INICIO_NEXA_WINDOWS_LAB.md"
+          (cd "$RUNNER_TEMP" && zip -qr "NEXA_WINDOWS_LAB.zip" "NEXA_WINDOWS_LAB")
+      - name: Export Obsidian Windows lab vault
+        if: github.ref == 'refs/heads/feature/windows-desktop'
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEXA-Windows-Lab-Cofre
+          path: ${{ runner.temp }}/NEXA_WINDOWS_LAB.zip
+          retention-days: 14
       - name: Publish matching stable release after verified build
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:

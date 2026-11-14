@@ -10,3 +10,25 @@
 - Release GitHub de desenvolvimento: **PUBLICADA**; aprovação no catálogo do Obsidian: **PENDENTE**.
 
 **Não instalar no acervo oficial enquanto os testes reais e a revisão estiverem pendentes.**
+
+
+## Branch de desenvolvimento Windows
+
+- Adaptador Windows e diagnóstico de possível sincronização dupla: implementados.
+- Trava de primeira sincronização e de troca da pasta remota: implementadas na branch.
+- Testes simulados Windows: executados em CI (quando aplicável).
+- Teste real no aplicativo Obsidian Desktop, OAuth real e sync real: PENDENTES.
+- A release 1.0.1 sob revisão do Obsidian permanece intacta.
+
+
+## Merge (branch Windows, em QA)
+- Merge conservador .md/UTF-8 com ancestral verificável, backups e bloqueio em sobreposição: implementação candidata.
+- Verificação automatizada simulada: por CI.
+- Validação real Drive/Windows/iOS/recuperação: ainda pendente.
+
+
+## LAB Windows v1.1.0 — isolamento do acervo oficial
+- Candidate v1.1.0 somente na branch `feature/windows-desktop`.
+- A pasta remota deve chamar-se exatamente `NEXA_DRIVE_CONNECT_LAB`; a pasta oficial `Obsidian` é recusada.
+- Build inclui cofre de demonstração para Windows (sem credenciais nem documentos reais).
+- Login Google real, USB/iOS, sync real e concorrência: aguardando homologação em dispositivos físicos.

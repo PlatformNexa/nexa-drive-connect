@@ -308,6 +308,44 @@ const NEXA_SYNC = (() => {
       }
       return {files,skipped};
     }
+    async storeMergeBase(path,data){
+      if(!/\.md$/i.test(path))return;
+      const b=bytes(data);
+      if(b.byteLength>NEXA_MERGE.MAX_BYTES)return;
+      try{NEXA_MERGE.decode(b);}catch(_){return;}
+      const key=NEXA_CORE.md5(b), dir='.nexa-connect/merge-base';
+      if(!(await this.vault.adapter.exists('.nexa-connect')))await this.vault.adapter.mkdir('.nexa-connect');
+      if(!(await this.vault.adapter.exists(dir)))await this.vault.adapter.mkdir(dir);
+      const dest=dir+'/'+key+'.txt';
+      if(!(await this.vault.adapter.exists(dest)))await this.vault.adapter.writeBinary(dest,asArrayBuffer(b));
+      const written=await this.vault.adapter.readBinary(dest);
+      if(NEXA_CORE.md5(bytes(written))!==key)throw new Error('Base de merge inválida; operação interrompida.');
+    }
+    async readMergeBase(hash){
+      if(!/^[a-f0-9]{32}$/.test(hash||''))throw new Error('Hash da base inválido.');
+      const dest='.nexa-connect/merge-base/'+hash+'.txt';
+      if(!(await this.vault.adapter.exists(dest)))throw new Error('Versão ancestral não disponível.');
+      const contents=await this.vault.adapter.readBinary(dest);
+      if(NEXA_CORE.md5(bytes(contents))!==hash)throw new Error('Versão ancestral não passou em integridade.');
+      return NEXA_MERGE.decode(bytes(contents));
+    }
+    async tryMergeConflict(conflict,remote,local,state){
+      const p=conflict.path,b=state.baseline?.[p];
+      if(!p||!/\.md$/i.test(p)||!b?.md5)return null;
+      const l=local.files.find(f=>f.path===p),r=remote.files.find(f=>f.path===p);
+      if(!l||!r||l.size>NEXA_MERGE.MAX_BYTES||r.size>NEXA_MERGE.MAX_BYTES)return null;
+      try{
+        const original=await this.readMergeBase(b.md5);
+        const {contents}=await this.checkLocal(p,l.md5);
+        await this.checkRemote(r.id,r.md5,r.parentId);
+        const remoteBytes=await this.drive.download(r.id);
+        if(NEXA_CORE.md5(bytes(remoteBytes))!==r.md5)return null;
+        const result=NEXA_MERGE.merge(original,NEXA_MERGE.decode(bytes(contents)),NEXA_MERGE.decode(bytes(remoteBytes)));
+        if(!result.ok)return null;
+        const mergeBytes=NEXA_MERGE.encode(result.text);
+        return {type:'MERGE_UPDATE',path:p,localMd5:l.md5,remoteMd5:r.md5,remoteId:r.id,mergedMd5:NEXA_CORE.md5(mergeBytes)};
+      }catch(_){return null;}
+    }
     async preview(rootId, internal=false){
       if(this.busy && !internal)throw new Error('Outra operação está ativa.');
       const remote=await this.drive.tree(rootId);
@@ -321,6 +359,17 @@ const NEXA_SYNC = (() => {
       plan.actions=plan.actions.filter(a=>{
         if(localInvalid.has(a.path)||remoteInvalid.has(a.path)) {plan.blocked.push({path:a.path,reason:'ARQUIVO_NAO_PROCESSAVEL'});return false;} return true;
       });
+      // Only disjoint, small UTF-8 Markdown edits are merged automatically.
+      // Missing/corrupted merge ancestor, binary, overlapping changes remain blocked.
+      const stillBlocked=[];let attempted=0;
+      for(const item of plan.blocked){
+        if(item.reason==='ALTERACAO_CONCORRENTE'&&attempted++<20){
+          const action=await this.tryMergeConflict(item,remote,local,state);
+          if(action){plan.actions.push(action);continue;}
+        }
+        stillBlocked.push(item);
+      }
+      plan.blocked=stillBlocked;
       plan.blocked.push(...local.skipped,...remote.skipped,...tooBig);
       return {rootId,plan,remote,local,baseline:state.baseline||{},createdAt:new Date().toISOString()};
     }
@@ -333,7 +382,13 @@ const NEXA_SYNC = (() => {
         dir=dir?dir+'/'+part:part;
         if(!(await this.vault.adapter.exists(dir)))await this.vault.adapter.mkdir(dir);
       }
-      if(await this.vault.adapter.exists(target))throw new Error('Backup já existe; recusando sobrescrever.');
+      // A retry after a failed upload can occur in the same millisecond.
+      // Keep every previous backup; choose an unused name instead of overwriting.
+      const baseTarget=target;
+      for(let attempt=1;await this.vault.adapter.exists(target);attempt++){
+        if(attempt>1000)throw new Error('Espaço de nomes dos backups esgotado.');
+        target=baseTarget+'.retry-'+attempt;
+      }
       await this.vault.adapter.writeBinary(target,asArrayBuffer(data));
       const read=await this.vault.adapter.readBinary(target);
       if(NEXA_CORE.md5(bytes(read))!==NEXA_CORE.md5(bytes(data)))throw new Error('Backup não validado; escrita bloqueada.');
@@ -359,6 +414,70 @@ const NEXA_SYNC = (() => {
       if(!meta || meta.trashed || meta.md5Checksum!==expected || !Array.isArray(meta.parents) || !meta.parents.includes(expectedParentId))throw new Error('Arquivo remoto alterado ou movido após prévia. Interrompido.');
       return meta;
     }
+    async conflictVersions(rootId,path){
+      path=NEXA_CORE.normalizePath(path);
+      if(!NEXA_CORE.allowedPath(path))throw new Error('Caminho fora do escopo.');
+      const snapshot=await this.preview(rootId);
+      const conflict=snapshot.plan.blocked.find(x=>x.path===path&&
+        (x.reason==='ALTERACAO_CONCORRENTE'||x.reason==='PRIMEIRA_SINC_DIVERGENTE'));
+      if(!conflict)throw new Error('Conflito não está disponível; atualize a prévia.');
+      const local=snapshot.local.files.find(x=>x.path===path);
+      const remote=snapshot.remote.files.find(x=>x.path===path);
+      if(!local||!remote)throw new Error('Ambas as versões precisam existir.');
+      const {contents}=await this.checkLocal(path,local.md5);
+      await this.checkRemote(remote.id,remote.md5,remote.parentId);
+      const remoteData=await this.drive.download(remote.id);
+      if(NEXA_CORE.md5(bytes(remoteData))!==remote.md5)throw new Error('A versão do Drive mudou durante a leitura.');
+      const state=(await this.getData())||{};
+      return {path,rootId,reason:conflict.reason,
+        localMd5:local.md5,remoteMd5:remote.md5,remoteId:remote.id,remoteParentId:remote.parentId,
+        localData:asArrayBuffer(contents),remoteData:asArrayBuffer(remoteData),
+        ancestorMd5:state.baseline?.[path]?.md5||null};
+    }
+    async resolveConflict(versions,choice){
+      if(!['LOCAL','DRIVE','AMBAS'].includes(choice))throw new Error('Escolha de conflito inválida.');
+      if(this.busy)throw new Error('Outra operação está ativa.');
+      this.busy=true;
+      try{
+        const p=NEXA_CORE.normalizePath(versions.path);
+        if(!NEXA_CORE.allowedPath(p))throw new Error('Caminho fora do escopo.');
+        const rootId=versions.rootId;
+        const current=await this.preview(rootId,true);
+        const blocked=current.plan.blocked.find(x=>x.path===p&&
+          (x.reason==='ALTERACAO_CONCORRENTE'||x.reason==='PRIMEIRA_SINC_DIVERGENTE'));
+        const r=current.remote.files.find(x=>x.path===p);
+        const l=current.local.files.find(x=>x.path===p);
+        if(!blocked||!l||!r||l.md5!==versions.localMd5||r.md5!==versions.remoteMd5||r.id!==versions.remoteId||
+          r.parentId!==versions.remoteParentId)throw new Error('As versões mudaram; abra uma nova comparação.');
+        const {f,contents}=await this.checkLocal(p,l.md5);
+        await this.checkRemote(r.id,r.md5,r.parentId);
+        const remoteBytes=await this.drive.download(r.id);
+        if(NEXA_CORE.md5(bytes(remoteBytes))!==r.md5)throw new Error('O Drive mudou durante a resolução.');
+        // Always preserve both before a decision. Recovery files never go into the Drive.
+        const localBackup=await this.backup(p,contents,'CONFLITO_LOCAL');
+        const remoteBackup=await this.backup(p,remoteBytes,'CONFLITO_DRIVE');
+        if(choice==='AMBAS')return {choice,status:'VERSOES_PRESERVADAS_SEM_SINCRONIZAR',localBackup,remoteBackup};
+        const state=(await this.getData())||{};
+        if(state.remoteRootId&&state.remoteRootId!==rootId)throw new Error('Vínculo da pasta mudou.');
+        const baseline={...(state.baseline||{})};
+        if(choice==='LOCAL'){
+          await this.checkRemote(r.id,r.md5,r.parentId);
+          await this.drive.upload(p.split('/').pop(),null,asArrayBuffer(contents),r.id);
+          const meta=await this.drive.metadata(r.id);
+          if(meta.md5Checksum!==l.md5)throw new Error('A versão local não foi confirmada no Drive.');
+          baseline[p]={md5:l.md5,remoteId:r.id};
+          await this.storeMergeBase(p,contents);
+        }else{
+          await this.checkRemote(r.id,r.md5,r.parentId);
+          await this.vault.modifyBinary(f,asArrayBuffer(remoteBytes));
+          await this.checkLocal(p,r.md5);
+          baseline[p]={md5:r.md5,remoteId:r.id};
+          await this.storeMergeBase(p,remoteBytes);
+        }
+        await this.setData({remoteRootId:rootId,baseline});
+        return {choice,status:'RESOLVIDO_COM_BACKUPS',localBackup,remoteBackup};
+      }finally{this.busy=false;}
+    }
     async ensureRemoteParent(path,rootId,dirs){
       const pieces=path.split('/').slice(0,-1);let parent=rootId, prefix='';
       for(const p of pieces){
@@ -381,7 +500,7 @@ const NEXA_SYNC = (() => {
       try{
         // Fresh metadata pass protects against changes since preview. It is not a distributed transaction.
         const fresh=await this.preview(snapshot.rootId,true);
-        const signatures=rows=>rows.map(a=>[a.type,a.path,a.remoteId||'',a.remoteMd5||'',a.localMd5||''].join('|')).sort().join('\n');
+        const signatures=rows=>rows.map(a=>[a.type,a.path,a.remoteId||'',a.remoteMd5||'',a.localMd5||'',a.mergedMd5||''].join('|')).sort().join('\n');
         if(signatures(fresh.plan.actions)!==signatures(snapshot.plan.actions)||
           JSON.stringify(fresh.plan.blocked)!==JSON.stringify(snapshot.plan.blocked))throw new Error('O estado mudou depois da prévia; aprovação cancelada.');
         const state=(await this.getData())||{};
@@ -390,14 +509,36 @@ const NEXA_SYNC = (() => {
         const dirs=new Map(fresh.remote.dirs);
         for(const path of fresh.plan.unchanged){
           const f=remoteMap.get(path); const l=fresh.local.files.find(x=>x.path===path);
-          if(f&&l)baseline[path]={md5:l.md5,remoteId:f.id};
+          if(f&&l){
+            const current=await this.checkLocal(path,l.md5);
+            await this.storeMergeBase(path,current.contents);
+            baseline[path]={md5:l.md5,remoteId:f.id};
+          }
         }
         await this.setData({remoteRootId:snapshot.rootId,baseline});
         for(const action of fresh.plan.actions){
           try{
             const p=NEXA_CORE.normalizePath(action.path);
             if(!NEXA_CORE.allowedPath(p))throw new Error('Caminho fora do escopo.');
-            if(action.type.startsWith('UPLOAD')){
+            if(action.type==='MERGE_UPDATE'){
+              const {f,contents}=await this.checkLocal(p,action.localMd5);
+              await this.checkRemote(action.remoteId,action.remoteMd5,remoteMap.get(p).parentId);
+              const oldRemote=await this.drive.download(action.remoteId);
+              if(NEXA_CORE.md5(bytes(oldRemote))!==action.remoteMd5)throw new Error('Remoto mudou antes do merge.');
+              const ancestor=await this.readMergeBase(baseline[p]?.md5);
+              const merged=NEXA_MERGE.merge(ancestor,NEXA_MERGE.decode(bytes(contents)),NEXA_MERGE.decode(bytes(oldRemote)));
+              if(!merged.ok)throw new Error('Merge tornou-se ambíguo. Interrompido.');
+              const data=NEXA_MERGE.encode(merged.text);
+              if(NEXA_CORE.md5(data)!==action.mergedMd5)throw new Error('Merge mudou desde a prévia.');
+              await this.backup(p,contents,'LOCAL_ANTES_MERGE');
+              await this.backup(p,oldRemote,'REMOTO_ANTES_MERGE');
+              await this.drive.upload(p.split('/').pop(),null,asArrayBuffer(data),action.remoteId);
+              const meta=await this.drive.metadata(action.remoteId);
+              if(meta.md5Checksum!==action.mergedMd5)throw new Error('Merge remoto não passou no readback.');
+              await this.vault.modifyBinary(f,asArrayBuffer(data));
+              await this.checkLocal(p,action.mergedMd5);
+              baseline[p]={md5:action.mergedMd5,remoteId:action.remoteId};
+            }else if(action.type.startsWith('UPLOAD')){
               const {contents}=await this.checkLocal(p,action.localMd5);
               if(action.type==='UPLOAD_NEW'){
                 const parent=await this.ensureRemoteParent(p,snapshot.rootId,dirs);
@@ -434,6 +575,8 @@ const NEXA_SYNC = (() => {
               if(!final)throw new Error('Readback local falhou.');
               baseline[p]={md5:action.remoteMd5,remoteId:action.remoteId};
             }
+            const synchronized=await this.checkLocal(p,baseline[p].md5);
+            await this.storeMergeBase(p,synchronized.contents);
             await this.setData({remoteRootId:snapshot.rootId,baseline});
             report.success.push({type:action.type,path:p});
           }catch(e){
@@ -452,23 +595,165 @@ const NEXA_SYNC = (() => {
 })();
 
 
+/* src/merge.js */
+/* NEXA conservative, line-based diff3 merge. No network or secrets. */
+const NEXA_MERGE=(()=>{
+ 'use strict';
+ const MAX_BYTES=256*1024, MAX_LINES=1200, MAX_CELLS=1500000;
+ const encoder=new TextEncoder(),decoder=new TextDecoder('utf-8',{fatal:true});
+ function encode(text){return encoder.encode(text);}
+ function decode(data){
+   const b=data instanceof Uint8Array?data:new Uint8Array(data);
+   if(b.byteLength>MAX_BYTES)throw Error('BASE_ACIMA_DO_LIMITE');
+   const text=decoder.decode(b);
+   if(text.includes('\0'))throw Error('CONTEUDO_NAO_TEXTUAL');
+   return text;
+ }
+ function edits(base,other){
+   const n=base.length,m=other.length;
+   if(n>MAX_LINES||m>MAX_LINES||(n+1)*(m+1)>MAX_CELLS)throw Error('TEXTO_COMPLEXO_DEMAIS');
+   const dp=Array.from({length:n+1},()=>new Uint16Array(m+1));
+   for(let i=n-1;i>=0;i--)for(let j=m-1;j>=0;j--)
+     dp[i][j]=base[i]===other[j]?1+dp[i+1][j+1]:Math.max(dp[i+1][j],dp[i][j+1]);
+   const out=[];let h=null,i=0,j=0;
+   while(i<n||j<m){
+     if(i<n&&j<m&&base[i]===other[j]){
+       if(h){h.end=i;out.push(h);h=null;} i++;j++;continue;
+     }
+     if(!h)h={start:i,end:i,content:[]};
+     if(j<m&&(i>=n||dp[i][j+1]>=dp[i+1][j]))h.content.push(other[j++]);
+     else{i++;h.end=i;}
+   }
+   if(h){h.end=i;out.push(h);}
+   return out;
+ }
+ function same(a,b){
+   return a.start===b.start&&a.end===b.end&&
+     a.content.length===b.content.length&&a.content.every((x,i)=>x===b.content[i]);
+ }
+ function touch(a,b){return a.start<=b.end&&b.start<=a.end;}
+ function merge(baseText,localText,remoteText){
+   if([baseText,localText,remoteText].some(s=>typeof s!=='string'||encode(s).byteLength>MAX_BYTES))
+     return {ok:false,reason:'ARQUIVO_MERGE_ACIMA_LIMITE'};
+   if(localText===remoteText)return {ok:true,text:localText,changes:0};
+   try{
+     const base=baseText.split('\n'),loc=localText.split('\n'),rem=remoteText.split('\n');
+     const left=edits(base,loc),right=edits(base,rem);
+     for(const a of left)for(const b of right)if(touch(a,b)&&!same(a,b))
+       return {ok:false,reason:'TRECHOS_SOBREPOSTOS'};
+     const all=left.slice();
+     for(const b of right)if(!all.some(a=>same(a,b)))all.push(b);
+     all.sort((a,b)=>a.start-b.start||a.end-b.end);
+     const out=[];let pos=0;
+     for(const h of all){
+       if(h.start<pos)return {ok:false,reason:'HUNKS_SOBREPOSTOS'};
+       out.push(...base.slice(pos,h.start),...h.content);pos=h.end;
+     }
+     out.push(...base.slice(pos));
+     const text=out.join('\n');
+     if(encode(text).byteLength>MAX_BYTES)return {ok:false,reason:'RESULTADO_MUITO_GRANDE'};
+     return {ok:true,text,changes:all.length};
+   }catch(e){return {ok:false,reason:String(e.message||e)};}
+ }
+ return {encode,decode,merge,MAX_BYTES};
+})();
+
+
+/* src/diff.js */
+// NEXA side-by-side line diff: conservative display, bounded computation, no HTML.
+const NEXA_DIFF=(()=>{
+ 'use strict';
+ const MAX_LINES=350,MAX_CELLS=125000,MAX_CHARS=90000;
+ function compare(left,right){
+   if(typeof left!=='string'||typeof right!=='string')return {available:false,reason:'Conteúdo não textual'};
+   if(left.length>MAX_CHARS||right.length>MAX_CHARS)
+     return {available:false,reason:'Prévia textual excede 90.000 caracteres; preserve as versões e compare externamente.'};
+   const a=left.split('\n'),b=right.split('\n');
+   if(a.length>MAX_LINES||b.length>MAX_LINES||(a.length+1)*(b.length+1)>MAX_CELLS)
+     return {available:false,reason:'Documento excede o limite seguro da comparação visual (350 linhas por versão).'};
+   const dp=Array.from({length:a.length+1},()=>new Uint16Array(b.length+1));
+   for(let i=a.length-1;i>=0;i--)for(let j=b.length-1;j>=0;j--)
+     dp[i][j]=a[i]===b[j]?1+dp[i+1][j+1]:Math.max(dp[i+1][j],dp[i][j+1]);
+   const rows=[];let i=0,j=0,leftLine=1,rightLine=1,changes=0;
+   function add(leftText,rightText,leftType,rightType){
+     if(leftType!=='same'||rightType!=='same')changes++;
+     rows.push({
+       left:leftText===null?null:{line:leftLine++,text:leftText,type:leftType},
+       right:rightText===null?null:{line:rightLine++,text:rightText,type:rightType}
+     });
+   }
+   while(i<a.length||j<b.length){
+     if(i<a.length&&j<b.length&&a[i]===b[j]){add(a[i++],b[j++],'same','same');continue;}
+     const removed=[],added=[];
+     while(i<a.length||j<b.length){
+       if(i<a.length&&j<b.length&&a[i]===b[j])break;
+       if(j<b.length&&(i>=a.length||dp[i][j+1]>dp[i+1][j]))added.push(b[j++]);
+       else if(i<a.length)removed.push(a[i++]);
+       else added.push(b[j++]);
+     }
+     for(let k=0;k<Math.max(removed.length,added.length);k++){
+       const lt=k<removed.length?removed[k]:null,rt=k<added.length?added[k]:null;
+       add(lt,rt,lt===null?'empty':rt===null?'removed':'modified',
+                rt===null?'empty':lt===null?'added':'modified');
+     }
+   }
+   return {available:true,rows,changes,leftLines:a.length,rightLines:b.length};
+ }
+ return {compare,MAX_LINES};
+})();
+
+
+/* src/platform.js */
+/* NEXA Drive Connect — shared platform awareness, safe for Obsidian mobile and desktop. */
+const NEXA_PLATFORM = (() => {
+  'use strict';
+  function classify(flags = {}) {
+    if (flags.isDesktopApp && flags.isWin) return 'windows';
+    if (flags.isDesktopApp) return 'desktop';
+    if (flags.isIosApp) return 'ios';
+    if (flags.isAndroidApp) return 'android';
+    if (flags.isMobileApp) return 'mobile';
+    return 'unknown';
+  }
+  function audit(app, flags = {}) {
+    const target = classify(flags);
+    if (target !== 'windows') return {target, hasLocalPath: false, cloudPathHint: false};
+    const adapter = app && app.vault && app.vault.adapter;
+    let basePath = '';
+    if (adapter && typeof adapter.getBasePath === 'function') {
+      try { basePath = String(adapter.getBasePath() || ''); } catch (_) { basePath = ''; }
+    }
+    // Path hints are NOT a guarantee: a Google Drive virtual mount may be only a drive letter.
+    const cloudPathHint = /(?:^|[\\/])(?:google drive|meu drive|my drive|onedrive|dropbox|icloud drive)(?:[\\/]|$)/i.test(basePath);
+    // Never return or log the user's absolute path.
+    return {target, hasLocalPath: Boolean(basePath), cloudPathHint};
+  }
+  return {classify, audit};
+})();
+
+
 /* src/plugin-ios.js */
 /* NEXA Drive Connect — iPhone direct OAuth/Google Drive adapter, controlled synchronization. */
-const { Plugin, PluginSettingTab, Setting, Modal, Notice, requestUrl } = require('obsidian');
+const { Plugin, PluginSettingTab, Setting, Modal, Notice, requestUrl, Platform } = require('obsidian');
 const NEXA_SECRET_KEY = 'nexa-drive-connect-google-oauth-v1';
 const DEFAULT_SETTINGS={clientId:'',remoteRootId:'',autoSync:false,intervalMinutes:10,
-  lastStatus:'Ainda não sincronizado',remoteRootName:'',baseline:{}};
+  lastStatus:'Ainda não sincronizado',remoteRootName:'',baseline:{},firstSyncApproved:false,boundRootId:''};
 function errorMessage(e){return String(e && e.message || e).replace(/[\r\n]/g,' ').slice(0,220);}
 class NexaPlanModal extends Modal {
-  constructor(app, snapshot, execute) {super(app);this.snapshot=snapshot;this.execute=execute;}
+  constructor(app, snapshot, execute, plugin) {super(app);this.snapshot=snapshot;this.execute=execute;this.plugin=plugin;}
   onOpen(){
     const el=this.contentEl;el.empty();const p=this.snapshot.plan;
     el.createEl('h2',{text:'NEXA — Prévia de sincronização'});
-    el.createEl('p',{text:`Pasta remota: ${this.snapshot.remote.rootName} · Enviar/baixar: ${p.actions.length} · Conflitos/bloqueios: ${p.blocked.length} · Iguais: ${p.unchanged.length}`});
+    el.createEl('p',{text:`Pasta remota: ${this.snapshot.remote.rootName} · Enviar/baixar/mesclar: ${p.actions.length} · Conflitos/bloqueios: ${p.blocked.length} · Iguais: ${p.unchanged.length}`});
     el.createEl('p',{text:'Nenhuma exclusão é propagada. O primeiro espelhamento divergente é bloqueado. Backups locais são criados antes de substituições.'});
     const list=el.createEl('div');list.style.maxHeight='40vh';list.style.overflowY='auto';
-    for(const a of p.actions.slice(0,75))list.createEl('p',{text:`${a.type}: ${a.path}`});
-    for(const b of p.blocked.slice(0,75))list.createEl('p',{text:`BLOQUEADO: ${b.path||'(sem caminho)'} — ${b.reason}`});
+    for(const a of p.actions.slice(0,75))list.createEl('p',{text:`${a.type==='MERGE_UPDATE'?'MESCLAR (mudanças independentes)':a.type}: ${a.path}`});
+    for(const b of p.blocked.slice(0,75)){
+      const row=list.createEl('div');
+      row.createEl('span',{text:`BLOQUEADO: ${b.path||'(sem caminho)'} — ${b.reason}`});
+      if(b.path&&(b.reason==='ALTERACAO_CONCORRENTE'||b.reason==='PRIMEIRA_SINC_DIVERGENTE'))
+        new Setting(row).addButton(btn=>btn.setButtonText('Comparar versões').onClick(()=>this.plugin.openConflictReview(this.snapshot,b.path)));
+    }
     if(p.actions.length+p.blocked.length>150)list.createEl('p',{text:'Prévia resumida. Operações excedentes não são ocultadas na contagem.'});
     new Setting(el).addButton(b=>b.setButtonText('Fechar').onClick(()=>this.close()));
     if(!p.blocked.length && (p.actions.length || p.unchanged.length)){
@@ -477,17 +762,86 @@ class NexaPlanModal extends Modal {
     if(p.blocked.length)el.createEl('p',{text:'Conflitos ou arquivos não processáveis: nenhuma escrita será executada neste lote. Resolva antes de sincronizar.'});
   }
 }
+class NexaConflictReviewModal extends Modal {
+  constructor(plugin,versions){super(plugin.app);this.plugin=plugin;this.versions=versions;}
+  onOpen(){
+    const el=this.contentEl;el.empty();const v=this.versions;
+    el.createEl('h2',{text:'NEXA — Comparar versões'});
+    el.createEl('p',{text:'Arquivo: '+v.path+' · Motivo: '+v.reason});
+    el.createEl('p',{text:'As duas versões serão preservadas em backups locais antes de qualquer decisão. A opção Manter ambas não resolve o conflito; você poderá escolher depois.'});
+    let left,right,previewError='';
+    try{
+      left=NEXA_MERGE.decode(new Uint8Array(v.localData));
+      right=NEXA_MERGE.decode(new Uint8Array(v.remoteData));
+    }catch(_){previewError='Prévia textual indisponível: arquivo binário, conteúdo inválido ou acima de 256 KiB.';}
+    let diff;
+    if(!previewError){
+      diff=NEXA_DIFF.compare(left,right);
+      if(!diff.available)previewError=diff.reason;
+    }
+    if(previewError)el.createEl('p',{text:previewError+' As duas versões continuam identificadas e preserváveis.'});
+    const info=el.createEl('div');
+    info.createEl('p',{text:'Aparelho — MD5 '+v.localMd5});
+    info.createEl('p',{text:'Google Drive — MD5 '+v.remoteMd5});
+    if(diff?.available){
+      el.createEl('p',{text:diff.changes+' linhas de comparação com diferenças. Cor e símbolos (+/−/≠) indicam alterações; sem realce significa conteúdo igual.'});
+      const scroll=el.createEl('div');
+      scroll.style.maxHeight='45vh';scroll.style.overflow='auto';
+      scroll.style.border='1px solid var(--background-modifier-border)';
+      const header=scroll.createEl('div');
+      header.style.display='grid';header.style.gridTemplateColumns='1fr 1fr';
+      header.style.fontWeight='600';header.style.position='sticky';header.style.top='0';
+      header.style.background='var(--background-primary)';
+      header.createEl('div',{text:'Versão deste aparelho'});
+      header.createEl('div',{text:'Versão do Google Drive'});
+      for(const row of diff.rows){
+        const line=scroll.createEl('div');
+        line.style.display='grid';line.style.gridTemplateColumns='1fr 1fr';
+        for(const cell of [row.left,row.right]){
+          const side=line.createEl('div');
+          side.style.fontFamily='var(--font-monospace)';
+          side.style.whiteSpace='pre-wrap';side.style.overflowWrap='anywhere';
+          side.style.padding='2px 6px';
+          side.style.borderBottom='1px solid var(--background-modifier-border)';
+          const type=cell?.type||'empty';
+          side.style.background=type==='added'?'var(--background-modifier-success)':
+            type==='removed'?'var(--background-modifier-error)':
+            type==='modified'?'var(--background-modifier-hover)':'transparent';
+          const mark=type==='added'?'+':type==='removed'?'−':type==='modified'?'≠':' ';
+          side.createEl('span',{text:cell?mark+' '+cell.line+'  '+cell.text:' '});
+        }
+      }
+    }
+    el.createEl('p',{text:'Atenção: uma alteração remota feita enquanto você escolhe pode cancelar a operação. A decisão não é um bloqueio exclusivo do Drive.'});
+    new Setting(el).setName('Manter as duas versões').setDesc('Salva ambas em backups, não altera a nota nem o Drive.').addButton(b=>b.setButtonText('Preservar ambas').onClick(()=>this.confirm('AMBAS')));
+    new Setting(el).setName('Escolher versão deste aparelho').setDesc('Publica a versão local no Drive; o conteúdo remoto é preservado antes em backup.').addButton(b=>b.setButtonText('Usar versão local').onClick(()=>this.confirm('LOCAL')));
+    new Setting(el).setName('Escolher versão do Drive').setDesc('Atualiza a nota local; o conteúdo local anterior é preservado antes em backup.').addButton(b=>b.setButtonText('Usar versão do Drive').onClick(()=>this.confirm('DRIVE')));
+    new Setting(el).addButton(b=>b.setButtonText('Cancelar').onClick(()=>this.close()));
+  }
+  confirm(choice){
+    const modal=new Modal(this.app);const el=modal.contentEl;
+    const names={AMBAS:'preservar as duas versões sem alterar o arquivo',LOCAL:'publicar a versão local no Drive',DRIVE:'substituir a cópia local pela versão do Drive'};
+    el.createEl('h3',{text:'Confirmar sua escolha'});
+    el.createEl('p',{text:'Você escolheu '+names[choice]+'. Os dois conteúdos serão preservados em backups antes de qualquer substituição.'});
+    new Setting(el).addButton(b=>b.setButtonText('Voltar').onClick(()=>modal.close()));
+    new Setting(el).addButton(b=>b.setCta().setButtonText('Confirmar decisão').onClick(async()=>{
+      modal.close();this.close();await this.plugin.applyConflictChoice(this.versions,choice);
+    }));
+    modal.open();
+  }
+}
 class NexaSettingsTab extends PluginSettingTab{
   constructor(app,plugin){super(app,plugin);this.plugin=plugin;}
   display(){
     const p=this.plugin,e=this.containerEl;e.empty();
-    e.createEl('h2',{text:'NEXA Drive Connect — Mobile'});
-    e.createEl('p',{text:'Google Drive ↔ cofre local. Sem Windows ou servidor de arquivos. Uma página estática do próprio projeto devolve o código de login (OAuth PKCE).'});
+    e.createEl('h2',{text:'NEXA Drive Connect LAB — '+(NEXA_PLATFORM.classify(Platform)==='windows'?'Windows':NEXA_PLATFORM.classify(Platform)==='desktop'?'Desktop':'Mobile')});
+    e.createEl('p',{text:'MODO LAB WINDOWS: somente a pasta Google Drive NEXA_DRIVE_CONNECT_LAB é aceita; o acervo oficial Obsidian fica bloqueado. Sem Drive Sync; autenticação OAuth PKCE.'});
+    if(NEXA_PLATFORM.classify(Platform)==='windows')new Setting(e).setName('Diagnóstico Windows').setDesc('Detecta indícios de cofre em pasta de sincronização externa; não examina conteúdo nem envia caminho do computador.').addButton(b=>b.setButtonText('Verificar cofre').onClick(()=>p.desktopPreflight()));
     e.createEl('p',{text:'Atenção: permissão OAuth do Google abrange o Drive da conta. O NEXA limita suas operações à pasta verificada. Nunca use uma conta com documentos confidenciais sem revisar essa permissão.'});
     new Setting(e).setName('Client ID Google').setDesc('ID do cliente OAuth tipo Aplicação web criado no seu Google Cloud.').addText(t=>t.setPlaceholder('...apps.googleusercontent.com').setValue(p.settings.clientId).onChange(async v=>{p.settings.clientId=v.trim();await p.saveSettings();}));
     new Setting(e).setName('Login Google').setDesc('Prepara OAuth PKCE e apresenta um link para tocar e abrir o navegador do dispositivo.').addButton(b=>b.setButtonText('Autorizar Google').onClick(()=>p.authorize()));
     e.createEl('p',{text:'URI de retorno obrigatório no Google Cloud: '+NEXA_AUTH.CALLBACK});
-    new Setting(e).setName('ID da pasta Obsidian').setDesc('Cole o ID da pasta Google Drive existente ou o URL completo dela. Não cria outra pasta.').addText(t=>t.setPlaceholder('ID ou link da pasta Obsidian').setValue(p.settings.remoteRootId).onChange(async v=>{
+    new Setting(e).setName('ID da pasta NEXA_DRIVE_CONNECT_LAB').setDesc('Cole o ID ou URL da pasta remota de laboratório. O plugin recusa a pasta oficial Obsidian.').addText(t=>t.setPlaceholder('ID ou link da pasta Obsidian').setValue(p.settings.remoteRootId).onChange(async v=>{
       p.settings.remoteRootId=p.extractId(v);await p.saveSettings();
     }));
     new Setting(e).setName('Prévia e sincronização').setDesc('Compara local e remoto. Só grava após confirmação, com backups e readback.').addButton(b=>b.setButtonText('Analisar alterações').setCta().onClick(()=>p.syncPreview()));
@@ -503,12 +857,59 @@ class NexaSettingsTab extends PluginSettingTab{
 }
 module.exports=class NexaDriveConnect extends Plugin{
   async onload(){
-    this.settings=Object.assign({},DEFAULT_SETTINGS,await this.loadData()||{});this.busy=false;this.oauthPending=null;this.nextTick=0;
+    this.settings=Object.assign({},DEFAULT_SETTINGS,await this.loadData()||{});this.busy=false;this.oauthPending=null;this.nextTick=0;this.activityTimer=0;this.lastActivityCheck=0;
     this.addSettingTab(new NexaSettingsTab(this.app,this));
     this.addCommand({id:'preview-sync',name:'Prévia da sincronização com Google Drive',callback:()=>this.syncPreview()});
     this.addCommand({id:'local-audit',name:'Auditar arquivos do cofre local',callback:()=>this.auditLocal()});
     this.registerObsidianProtocolHandler('nexa-drive-connect',(params)=>this.handleOAuth(params));
     this.registerInterval(window.setInterval(()=>this.maybeAutoSync(),60000));
+    // Every callback is managed by the Obsidian plugin lifecycle.
+    this.registerEvent(this.app.workspace.on('file-open',()=>this.requestSyncOnActivity('file-open')));
+    this.registerEvent(this.app.vault.on('modify',file=>{
+      try{if(file?.path && NEXA_CORE.allowedPath(file.path))this.requestSyncOnActivity('modify');}catch(_){}
+    }));
+    this.registerDomEvent(window,'focus',()=>this.requestSyncOnActivity('focus'));
+    this.registerDomEvent(document,'visibilitychange',()=>{if(!document.hidden)this.requestSyncOnActivity('resume');});
+    this.app.workspace.onLayoutReady(()=>this.requestSyncOnActivity('startup'));
+  }
+  onunload(){
+    if(this.activityTimer){window.clearTimeout(this.activityTimer);this.activityTimer=0;}
+  }
+  requestSyncOnActivity(reason){
+    if(!this.settings?.autoSync || !this.settings?.firstSyncApproved ||
+       !this.settings?.boundRootId || this.settings.remoteRootId!==this.settings.boundRootId)return;
+    if(this.activityTimer)window.clearTimeout(this.activityTimer);
+    this.activityTimer=window.setTimeout(()=>{
+      this.activityTimer=0;
+      // Deduplicate focus/file-open/modify bursts, with the ordinary periodic fallback.
+      if(Date.now()-this.lastActivityCheck<15000)return;
+      this.lastActivityCheck=Date.now();
+      this.nextTick=0;
+      this.maybeAutoSync();
+    },reason==='modify'?1800:500);
+  }
+  async editorSafety(plan){
+    const ws=this.app?.workspace;
+    if(typeof ws?.getLeavesOfType!=='function')return {reason:'EDITOR_INDETERMINADO'};
+    for(const leaf of ws.getLeavesOfType('markdown')){
+      const view=leaf?.view,path=view?.file?.path;
+      if(!path)continue;
+      // File buffers not yet saved to vault must never be overwritten by remote sync.
+      if(typeof view.editor?.getValue!=='function'||typeof this.app.vault.read!=='function')
+        return {reason:'EDITOR_NAO_VERIFICAVEL',path};
+      let disk;
+      try{disk=await this.app.vault.read(view.file);}catch(_){return {reason:'EDITOR_NAO_VERIFICAVEL',path};}
+      if(view.editor.getValue()!==disk)return {reason:'EDITOR_COM_ALTERACAO_PENDENTE',path};
+      const affected=plan?.actions?.some(a=>a.path===path&&
+        (a.type==='DOWNLOAD_UPDATE'||a.type==='DOWNLOAD_NEW'||a.type==='MERGE_UPDATE'));
+      if(affected)return {reason:'NOTA_ABERTA_AGUARDA_FECHAMENTO',path};
+    }
+    return null;
+  }
+  desktopPreflight(){
+    const info=NEXA_PLATFORM.audit(this.app,Platform);
+    if(info.target!=='windows')return;
+    new Notice(info.cloudPathHint?'NEXA: possível pasta já sincronizada. Evite executar dois sincronizadores no mesmo cofre.':'NEXA: verificação local concluída. Confira se outro serviço sincroniza este cofre; caminhos por letra de unidade nem sempre são detectáveis.',12000);
   }
   async saveSettings(){await this.saveData(this.settings);}
   extractId(s){
@@ -573,9 +974,10 @@ module.exports=class NexaDriveConnect extends Plugin{
     async()=>this.settings,
     async d=>{this.settings={...this.settings,...d};await this.saveSettings();});}
   async snapshot(){
+    if(this.settings.boundRootId && this.settings.boundRootId!==this.settings.remoteRootId)throw new Error('Pasta remota alterada após a vinculação: sincronização bloqueada.');
     if(!/^[\w-]{8,}$/.test(this.settings.remoteRootId))throw new Error('Configure o ID da pasta Obsidian existente.');
     const preview=await this.engine().preview(this.settings.remoteRootId);
-    if(preview.remote.rootName!=='Obsidian')throw new Error('A pasta remota precisa chamar-se exatamente Obsidian.');
+    if(preview.remote.rootName!=='NEXA_DRIVE_CONNECT_LAB')throw new Error('MODO LAB: pasta remota não autorizada. Use exclusivamente NEXA_DRIVE_CONNECT_LAB; acervo Obsidian oficial bloqueado.');
     return preview;
   }
   async syncPreview(){
@@ -583,7 +985,32 @@ module.exports=class NexaDriveConnect extends Plugin{
     this.busy=true;
     try{
       const snap=await this.snapshot();
-      new NexaPlanModal(this.app,snap,()=>this.applySnapshot(snap)).open();
+      new NexaPlanModal(this.app,snap,()=>this.applySnapshot(snap),this).open();
+    }catch(e){new Notice('NEXA: '+errorMessage(e),12000);}
+    finally{this.busy=false;}
+  }
+  async openConflictReview(snap,path){
+    if(this.busy){new Notice('NEXA: sincronização em andamento.');return;}
+    this.busy=true;
+    try{
+      if(snap.rootId!==this.settings.remoteRootId)throw new Error('Pasta remota alterada.');
+      const versions=await this.engine().conflictVersions(snap.rootId,path);
+      new NexaConflictReviewModal(this,versions).open();
+    }catch(e){new Notice('NEXA: '+errorMessage(e),12000);}
+    finally{this.busy=false;}
+  }
+  async applyConflictChoice(versions,choice){
+    if(this.busy){new Notice('NEXA: outra operação em andamento.');return;}
+    this.busy=true;
+    try{
+      if(versions.rootId!==this.settings.remoteRootId)throw new Error('Pasta remota alterada.');
+      // Never write to a note that is currently open or has an uncommitted editor buffer.
+      const safety=await this.editorSafety({actions:[{type:'DOWNLOAD_UPDATE',path:versions.path}]});
+      if(safety)throw new Error('Feche a nota antes de resolver o conflito: '+safety.reason);
+      const result=await this.engine().resolveConflict(versions,choice);
+      this.settings.lastStatus=result.status+' · '+versions.path;
+      await this.saveSettings();
+      new Notice('NEXA: '+this.settings.lastStatus,12000);
     }catch(e){new Notice('NEXA: '+errorMessage(e),12000);}
     finally{this.busy=false;}
   }
@@ -593,19 +1020,27 @@ module.exports=class NexaDriveConnect extends Plugin{
     this.busy=true;
     try{
       const report=await this.engine().apply(snap,true);
+      if(!report.failed.length && !report.blocked.length && (snap.plan.actions.length || snap.plan.unchanged.length)){this.settings.firstSyncApproved=true;this.settings.boundRootId=snap.rootId;}
       this.settings.lastStatus=report.status+': '+report.success.length+' alterações; '+report.failed.length+' falhas';
       await this.saveSettings();new Notice('NEXA: '+this.settings.lastStatus,12000);
     }catch(e){this.settings.lastStatus='FALHOU: '+errorMessage(e);await this.saveSettings();new Notice('NEXA: '+this.settings.lastStatus,12000);}
     finally{this.busy=false;}
   }
   async maybeAutoSync(){
-    if(!this.settings.autoSync || !this.settings.remoteRootId || this.busy || Date.now()<this.nextTick)return;
+    if(!this.settings.autoSync || !this.settings.firstSyncApproved || !this.settings.boundRootId || this.settings.remoteRootId!==this.settings.boundRootId || this.busy || Date.now()<this.nextTick)return;
     this.nextTick=Date.now()+this.settings.intervalMinutes*60000;
     this.busy=true;
     try{
+      const initialSafety=await this.editorSafety();
+      if(initialSafety){this.settings.lastStatus='AGUARDANDO: '+initialSafety.reason;await this.saveSettings();return;}
       const snap=await this.snapshot();
       if(snap.plan.blocked.length){this.settings.lastStatus='PAUSADO: '+snap.plan.blocked.length+' conflitos/bloqueios';await this.saveSettings();return;}
+      const safety=await this.editorSafety(snap.plan);
+      if(safety){this.settings.lastStatus='AGUARDANDO: '+safety.reason;await this.saveSettings();return;}
       if(snap.plan.actions.length){
+        // Re-check editor just before writing. Concurrent changes still require engine preflight.
+        const beforeApply=await this.editorSafety(snap.plan);
+        if(beforeApply){this.settings.lastStatus='AGUARDANDO: '+beforeApply.reason;await this.saveSettings();return;}
         const r=await this.engine().apply(snap,true);
         this.settings.lastStatus=r.status+': '+r.success.length+' operações; '+r.failed.length+' falhas';
         await this.saveSettings();

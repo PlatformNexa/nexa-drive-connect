@@ -1,19 +1,24 @@
 /* NEXA Drive Connect — iPhone direct OAuth/Google Drive adapter, controlled synchronization. */
-const { Plugin, PluginSettingTab, Setting, Modal, Notice, requestUrl } = require('obsidian');
+const { Plugin, PluginSettingTab, Setting, Modal, Notice, requestUrl, Platform } = require('obsidian');
 const NEXA_SECRET_KEY = 'nexa-drive-connect-google-oauth-v1';
 const DEFAULT_SETTINGS={clientId:'',remoteRootId:'',autoSync:false,intervalMinutes:10,
-  lastStatus:'Ainda não sincronizado',remoteRootName:'',baseline:{}};
+  lastStatus:'Ainda não sincronizado',remoteRootName:'',baseline:{},firstSyncApproved:false,boundRootId:''};
 function errorMessage(e){return String(e && e.message || e).replace(/[\r\n]/g,' ').slice(0,220);}
 class NexaPlanModal extends Modal {
-  constructor(app, snapshot, execute) {super(app);this.snapshot=snapshot;this.execute=execute;}
+  constructor(app, snapshot, execute, plugin) {super(app);this.snapshot=snapshot;this.execute=execute;this.plugin=plugin;}
   onOpen(){
     const el=this.contentEl;el.empty();const p=this.snapshot.plan;
     el.createEl('h2',{text:'NEXA — Prévia de sincronização'});
-    el.createEl('p',{text:`Pasta remota: ${this.snapshot.remote.rootName} · Enviar/baixar: ${p.actions.length} · Conflitos/bloqueios: ${p.blocked.length} · Iguais: ${p.unchanged.length}`});
+    el.createEl('p',{text:`Pasta remota: ${this.snapshot.remote.rootName} · Enviar/baixar/mesclar: ${p.actions.length} · Conflitos/bloqueios: ${p.blocked.length} · Iguais: ${p.unchanged.length}`});
     el.createEl('p',{text:'Nenhuma exclusão é propagada. O primeiro espelhamento divergente é bloqueado. Backups locais são criados antes de substituições.'});
     const list=el.createEl('div');list.style.maxHeight='40vh';list.style.overflowY='auto';
-    for(const a of p.actions.slice(0,75))list.createEl('p',{text:`${a.type}: ${a.path}`});
-    for(const b of p.blocked.slice(0,75))list.createEl('p',{text:`BLOQUEADO: ${b.path||'(sem caminho)'} — ${b.reason}`});
+    for(const a of p.actions.slice(0,75))list.createEl('p',{text:`${a.type==='MERGE_UPDATE'?'MESCLAR (mudanças independentes)':a.type}: ${a.path}`});
+    for(const b of p.blocked.slice(0,75)){
+      const row=list.createEl('div');
+      row.createEl('span',{text:`BLOQUEADO: ${b.path||'(sem caminho)'} — ${b.reason}`});
+      if(b.path&&(b.reason==='ALTERACAO_CONCORRENTE'||b.reason==='PRIMEIRA_SINC_DIVERGENTE'))
+        new Setting(row).addButton(btn=>btn.setButtonText('Comparar versões').onClick(()=>this.plugin.openConflictReview(this.snapshot,b.path)));
+    }
     if(p.actions.length+p.blocked.length>150)list.createEl('p',{text:'Prévia resumida. Operações excedentes não são ocultadas na contagem.'});
     new Setting(el).addButton(b=>b.setButtonText('Fechar').onClick(()=>this.close()));
     if(!p.blocked.length && (p.actions.length || p.unchanged.length)){
@@ -22,17 +27,86 @@ class NexaPlanModal extends Modal {
     if(p.blocked.length)el.createEl('p',{text:'Conflitos ou arquivos não processáveis: nenhuma escrita será executada neste lote. Resolva antes de sincronizar.'});
   }
 }
+class NexaConflictReviewModal extends Modal {
+  constructor(plugin,versions){super(plugin.app);this.plugin=plugin;this.versions=versions;}
+  onOpen(){
+    const el=this.contentEl;el.empty();const v=this.versions;
+    el.createEl('h2',{text:'NEXA — Comparar versões'});
+    el.createEl('p',{text:'Arquivo: '+v.path+' · Motivo: '+v.reason});
+    el.createEl('p',{text:'As duas versões serão preservadas em backups locais antes de qualquer decisão. A opção Manter ambas não resolve o conflito; você poderá escolher depois.'});
+    let left,right,previewError='';
+    try{
+      left=NEXA_MERGE.decode(new Uint8Array(v.localData));
+      right=NEXA_MERGE.decode(new Uint8Array(v.remoteData));
+    }catch(_){previewError='Prévia textual indisponível: arquivo binário, conteúdo inválido ou acima de 256 KiB.';}
+    let diff;
+    if(!previewError){
+      diff=NEXA_DIFF.compare(left,right);
+      if(!diff.available)previewError=diff.reason;
+    }
+    if(previewError)el.createEl('p',{text:previewError+' As duas versões continuam identificadas e preserváveis.'});
+    const info=el.createEl('div');
+    info.createEl('p',{text:'Aparelho — MD5 '+v.localMd5});
+    info.createEl('p',{text:'Google Drive — MD5 '+v.remoteMd5});
+    if(diff?.available){
+      el.createEl('p',{text:diff.changes+' linhas de comparação com diferenças. Cor e símbolos (+/−/≠) indicam alterações; sem realce significa conteúdo igual.'});
+      const scroll=el.createEl('div');
+      scroll.style.maxHeight='45vh';scroll.style.overflow='auto';
+      scroll.style.border='1px solid var(--background-modifier-border)';
+      const header=scroll.createEl('div');
+      header.style.display='grid';header.style.gridTemplateColumns='1fr 1fr';
+      header.style.fontWeight='600';header.style.position='sticky';header.style.top='0';
+      header.style.background='var(--background-primary)';
+      header.createEl('div',{text:'Versão deste aparelho'});
+      header.createEl('div',{text:'Versão do Google Drive'});
+      for(const row of diff.rows){
+        const line=scroll.createEl('div');
+        line.style.display='grid';line.style.gridTemplateColumns='1fr 1fr';
+        for(const cell of [row.left,row.right]){
+          const side=line.createEl('div');
+          side.style.fontFamily='var(--font-monospace)';
+          side.style.whiteSpace='pre-wrap';side.style.overflowWrap='anywhere';
+          side.style.padding='2px 6px';
+          side.style.borderBottom='1px solid var(--background-modifier-border)';
+          const type=cell?.type||'empty';
+          side.style.background=type==='added'?'var(--background-modifier-success)':
+            type==='removed'?'var(--background-modifier-error)':
+            type==='modified'?'var(--background-modifier-hover)':'transparent';
+          const mark=type==='added'?'+':type==='removed'?'−':type==='modified'?'≠':' ';
+          side.createEl('span',{text:cell?mark+' '+cell.line+'  '+cell.text:' '});
+        }
+      }
+    }
+    el.createEl('p',{text:'Atenção: uma alteração remota feita enquanto você escolhe pode cancelar a operação. A decisão não é um bloqueio exclusivo do Drive.'});
+    new Setting(el).setName('Manter as duas versões').setDesc('Salva ambas em backups, não altera a nota nem o Drive.').addButton(b=>b.setButtonText('Preservar ambas').onClick(()=>this.confirm('AMBAS')));
+    new Setting(el).setName('Escolher versão deste aparelho').setDesc('Publica a versão local no Drive; o conteúdo remoto é preservado antes em backup.').addButton(b=>b.setButtonText('Usar versão local').onClick(()=>this.confirm('LOCAL')));
+    new Setting(el).setName('Escolher versão do Drive').setDesc('Atualiza a nota local; o conteúdo local anterior é preservado antes em backup.').addButton(b=>b.setButtonText('Usar versão do Drive').onClick(()=>this.confirm('DRIVE')));
+    new Setting(el).addButton(b=>b.setButtonText('Cancelar').onClick(()=>this.close()));
+  }
+  confirm(choice){
+    const modal=new Modal(this.app);const el=modal.contentEl;
+    const names={AMBAS:'preservar as duas versões sem alterar o arquivo',LOCAL:'publicar a versão local no Drive',DRIVE:'substituir a cópia local pela versão do Drive'};
+    el.createEl('h3',{text:'Confirmar sua escolha'});
+    el.createEl('p',{text:'Você escolheu '+names[choice]+'. Os dois conteúdos serão preservados em backups antes de qualquer substituição.'});
+    new Setting(el).addButton(b=>b.setButtonText('Voltar').onClick(()=>modal.close()));
+    new Setting(el).addButton(b=>b.setCta().setButtonText('Confirmar decisão').onClick(async()=>{
+      modal.close();this.close();await this.plugin.applyConflictChoice(this.versions,choice);
+    }));
+    modal.open();
+  }
+}
 class NexaSettingsTab extends PluginSettingTab{
   constructor(app,plugin){super(app,plugin);this.plugin=plugin;}
   display(){
     const p=this.plugin,e=this.containerEl;e.empty();
-    e.createEl('h2',{text:'NEXA Drive Connect — Mobile'});
-    e.createEl('p',{text:'Google Drive ↔ cofre local. Sem Windows ou servidor de arquivos. Uma página estática do próprio projeto devolve o código de login (OAuth PKCE).'});
+    e.createEl('h2',{text:'NEXA Drive Connect LAB — '+(NEXA_PLATFORM.classify(Platform)==='windows'?'Windows':NEXA_PLATFORM.classify(Platform)==='desktop'?'Desktop':'Mobile')});
+    e.createEl('p',{text:'MODO LAB WINDOWS: somente a pasta Google Drive NEXA_DRIVE_CONNECT_LAB é aceita; o acervo oficial Obsidian fica bloqueado. Sem Drive Sync; autenticação OAuth PKCE.'});
+    if(NEXA_PLATFORM.classify(Platform)==='windows')new Setting(e).setName('Diagnóstico Windows').setDesc('Detecta indícios de cofre em pasta de sincronização externa; não examina conteúdo nem envia caminho do computador.').addButton(b=>b.setButtonText('Verificar cofre').onClick(()=>p.desktopPreflight()));
     e.createEl('p',{text:'Atenção: permissão OAuth do Google abrange o Drive da conta. O NEXA limita suas operações à pasta verificada. Nunca use uma conta com documentos confidenciais sem revisar essa permissão.'});
     new Setting(e).setName('Client ID Google').setDesc('ID do cliente OAuth tipo Aplicação web criado no seu Google Cloud.').addText(t=>t.setPlaceholder('...apps.googleusercontent.com').setValue(p.settings.clientId).onChange(async v=>{p.settings.clientId=v.trim();await p.saveSettings();}));
     new Setting(e).setName('Login Google').setDesc('Prepara OAuth PKCE e apresenta um link para tocar e abrir o navegador do dispositivo.').addButton(b=>b.setButtonText('Autorizar Google').onClick(()=>p.authorize()));
     e.createEl('p',{text:'URI de retorno obrigatório no Google Cloud: '+NEXA_AUTH.CALLBACK});
-    new Setting(e).setName('ID da pasta Obsidian').setDesc('Cole o ID da pasta Google Drive existente ou o URL completo dela. Não cria outra pasta.').addText(t=>t.setPlaceholder('ID ou link da pasta Obsidian').setValue(p.settings.remoteRootId).onChange(async v=>{
+    new Setting(e).setName('ID da pasta NEXA_DRIVE_CONNECT_LAB').setDesc('Cole o ID ou URL da pasta remota de laboratório. O plugin recusa a pasta oficial Obsidian.').addText(t=>t.setPlaceholder('ID ou link da pasta Obsidian').setValue(p.settings.remoteRootId).onChange(async v=>{
       p.settings.remoteRootId=p.extractId(v);await p.saveSettings();
     }));
     new Setting(e).setName('Prévia e sincronização').setDesc('Compara local e remoto. Só grava após confirmação, com backups e readback.').addButton(b=>b.setButtonText('Analisar alterações').setCta().onClick(()=>p.syncPreview()));
@@ -48,12 +122,59 @@ class NexaSettingsTab extends PluginSettingTab{
 }
 module.exports=class NexaDriveConnect extends Plugin{
   async onload(){
-    this.settings=Object.assign({},DEFAULT_SETTINGS,await this.loadData()||{});this.busy=false;this.oauthPending=null;this.nextTick=0;
+    this.settings=Object.assign({},DEFAULT_SETTINGS,await this.loadData()||{});this.busy=false;this.oauthPending=null;this.nextTick=0;this.activityTimer=0;this.lastActivityCheck=0;
     this.addSettingTab(new NexaSettingsTab(this.app,this));
     this.addCommand({id:'preview-sync',name:'Prévia da sincronização com Google Drive',callback:()=>this.syncPreview()});
     this.addCommand({id:'local-audit',name:'Auditar arquivos do cofre local',callback:()=>this.auditLocal()});
     this.registerObsidianProtocolHandler('nexa-drive-connect',(params)=>this.handleOAuth(params));
     this.registerInterval(window.setInterval(()=>this.maybeAutoSync(),60000));
+    // Every callback is managed by the Obsidian plugin lifecycle.
+    this.registerEvent(this.app.workspace.on('file-open',()=>this.requestSyncOnActivity('file-open')));
+    this.registerEvent(this.app.vault.on('modify',file=>{
+      try{if(file?.path && NEXA_CORE.allowedPath(file.path))this.requestSyncOnActivity('modify');}catch(_){}
+    }));
+    this.registerDomEvent(window,'focus',()=>this.requestSyncOnActivity('focus'));
+    this.registerDomEvent(document,'visibilitychange',()=>{if(!document.hidden)this.requestSyncOnActivity('resume');});
+    this.app.workspace.onLayoutReady(()=>this.requestSyncOnActivity('startup'));
+  }
+  onunload(){
+    if(this.activityTimer){window.clearTimeout(this.activityTimer);this.activityTimer=0;}
+  }
+  requestSyncOnActivity(reason){
+    if(!this.settings?.autoSync || !this.settings?.firstSyncApproved ||
+       !this.settings?.boundRootId || this.settings.remoteRootId!==this.settings.boundRootId)return;
+    if(this.activityTimer)window.clearTimeout(this.activityTimer);
+    this.activityTimer=window.setTimeout(()=>{
+      this.activityTimer=0;
+      // Deduplicate focus/file-open/modify bursts, with the ordinary periodic fallback.
+      if(Date.now()-this.lastActivityCheck<15000)return;
+      this.lastActivityCheck=Date.now();
+      this.nextTick=0;
+      this.maybeAutoSync();
+    },reason==='modify'?1800:500);
+  }
+  async editorSafety(plan){
+    const ws=this.app?.workspace;
+    if(typeof ws?.getLeavesOfType!=='function')return {reason:'EDITOR_INDETERMINADO'};
+    for(const leaf of ws.getLeavesOfType('markdown')){
+      const view=leaf?.view,path=view?.file?.path;
+      if(!path)continue;
+      // File buffers not yet saved to vault must never be overwritten by remote sync.
+      if(typeof view.editor?.getValue!=='function'||typeof this.app.vault.read!=='function')
+        return {reason:'EDITOR_NAO_VERIFICAVEL',path};
+      let disk;
+      try{disk=await this.app.vault.read(view.file);}catch(_){return {reason:'EDITOR_NAO_VERIFICAVEL',path};}
+      if(view.editor.getValue()!==disk)return {reason:'EDITOR_COM_ALTERACAO_PENDENTE',path};
+      const affected=plan?.actions?.some(a=>a.path===path&&
+        (a.type==='DOWNLOAD_UPDATE'||a.type==='DOWNLOAD_NEW'||a.type==='MERGE_UPDATE'));
+      if(affected)return {reason:'NOTA_ABERTA_AGUARDA_FECHAMENTO',path};
+    }
+    return null;
+  }
+  desktopPreflight(){
+    const info=NEXA_PLATFORM.audit(this.app,Platform);
+    if(info.target!=='windows')return;
+    new Notice(info.cloudPathHint?'NEXA: possível pasta já sincronizada. Evite executar dois sincronizadores no mesmo cofre.':'NEXA: verificação local concluída. Confira se outro serviço sincroniza este cofre; caminhos por letra de unidade nem sempre são detectáveis.',12000);
   }
   async saveSettings(){await this.saveData(this.settings);}
   extractId(s){
@@ -118,9 +239,10 @@ module.exports=class NexaDriveConnect extends Plugin{
     async()=>this.settings,
     async d=>{this.settings={...this.settings,...d};await this.saveSettings();});}
   async snapshot(){
+    if(this.settings.boundRootId && this.settings.boundRootId!==this.settings.remoteRootId)throw new Error('Pasta remota alterada após a vinculação: sincronização bloqueada.');
     if(!/^[\w-]{8,}$/.test(this.settings.remoteRootId))throw new Error('Configure o ID da pasta Obsidian existente.');
     const preview=await this.engine().preview(this.settings.remoteRootId);
-    if(preview.remote.rootName!=='Obsidian')throw new Error('A pasta remota precisa chamar-se exatamente Obsidian.');
+    if(preview.remote.rootName!=='NEXA_DRIVE_CONNECT_LAB')throw new Error('MODO LAB: pasta remota não autorizada. Use exclusivamente NEXA_DRIVE_CONNECT_LAB; acervo Obsidian oficial bloqueado.');
     return preview;
   }
   async syncPreview(){
@@ -128,7 +250,32 @@ module.exports=class NexaDriveConnect extends Plugin{
     this.busy=true;
     try{
       const snap=await this.snapshot();
-      new NexaPlanModal(this.app,snap,()=>this.applySnapshot(snap)).open();
+      new NexaPlanModal(this.app,snap,()=>this.applySnapshot(snap),this).open();
+    }catch(e){new Notice('NEXA: '+errorMessage(e),12000);}
+    finally{this.busy=false;}
+  }
+  async openConflictReview(snap,path){
+    if(this.busy){new Notice('NEXA: sincronização em andamento.');return;}
+    this.busy=true;
+    try{
+      if(snap.rootId!==this.settings.remoteRootId)throw new Error('Pasta remota alterada.');
+      const versions=await this.engine().conflictVersions(snap.rootId,path);
+      new NexaConflictReviewModal(this,versions).open();
+    }catch(e){new Notice('NEXA: '+errorMessage(e),12000);}
+    finally{this.busy=false;}
+  }
+  async applyConflictChoice(versions,choice){
+    if(this.busy){new Notice('NEXA: outra operação em andamento.');return;}
+    this.busy=true;
+    try{
+      if(versions.rootId!==this.settings.remoteRootId)throw new Error('Pasta remota alterada.');
+      // Never write to a note that is currently open or has an uncommitted editor buffer.
+      const safety=await this.editorSafety({actions:[{type:'DOWNLOAD_UPDATE',path:versions.path}]});
+      if(safety)throw new Error('Feche a nota antes de resolver o conflito: '+safety.reason);
+      const result=await this.engine().resolveConflict(versions,choice);
+      this.settings.lastStatus=result.status+' · '+versions.path;
+      await this.saveSettings();
+      new Notice('NEXA: '+this.settings.lastStatus,12000);
     }catch(e){new Notice('NEXA: '+errorMessage(e),12000);}
     finally{this.busy=false;}
   }
@@ -138,19 +285,27 @@ module.exports=class NexaDriveConnect extends Plugin{
     this.busy=true;
     try{
       const report=await this.engine().apply(snap,true);
+      if(!report.failed.length && !report.blocked.length && (snap.plan.actions.length || snap.plan.unchanged.length)){this.settings.firstSyncApproved=true;this.settings.boundRootId=snap.rootId;}
       this.settings.lastStatus=report.status+': '+report.success.length+' alterações; '+report.failed.length+' falhas';
       await this.saveSettings();new Notice('NEXA: '+this.settings.lastStatus,12000);
     }catch(e){this.settings.lastStatus='FALHOU: '+errorMessage(e);await this.saveSettings();new Notice('NEXA: '+this.settings.lastStatus,12000);}
     finally{this.busy=false;}
   }
   async maybeAutoSync(){
-    if(!this.settings.autoSync || !this.settings.remoteRootId || this.busy || Date.now()<this.nextTick)return;
+    if(!this.settings.autoSync || !this.settings.firstSyncApproved || !this.settings.boundRootId || this.settings.remoteRootId!==this.settings.boundRootId || this.busy || Date.now()<this.nextTick)return;
     this.nextTick=Date.now()+this.settings.intervalMinutes*60000;
     this.busy=true;
     try{
+      const initialSafety=await this.editorSafety();
+      if(initialSafety){this.settings.lastStatus='AGUARDANDO: '+initialSafety.reason;await this.saveSettings();return;}
       const snap=await this.snapshot();
       if(snap.plan.blocked.length){this.settings.lastStatus='PAUSADO: '+snap.plan.blocked.length+' conflitos/bloqueios';await this.saveSettings();return;}
+      const safety=await this.editorSafety(snap.plan);
+      if(safety){this.settings.lastStatus='AGUARDANDO: '+safety.reason;await this.saveSettings();return;}
       if(snap.plan.actions.length){
+        // Re-check editor just before writing. Concurrent changes still require engine preflight.
+        const beforeApply=await this.editorSafety(snap.plan);
+        if(beforeApply){this.settings.lastStatus='AGUARDANDO: '+beforeApply.reason;await this.saveSettings();return;}
         const r=await this.engine().apply(snap,true);
         this.settings.lastStatus=r.status+': '+r.success.length+' operações; '+r.failed.length+' falhas';
         await this.saveSettings();
