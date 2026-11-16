@@ -17,7 +17,7 @@ for(const n of ['core','audit','auth','drive','sync','merge','diff','platform','
  await plugin.updateSecret({pendingOAuth:{state:'stateSECRET',verifier:'verifierSECRET',expires:Date.now()+60000}});
  await plugin.handleOAuth({state:'stateSECRET',code:'codeSECRET'});
  assert.equal(calls,1);assert.equal(plugin.settings.oauthDiagnostic.stage,'ERRO_TOKEN');
- assert.equal(plugin.settings.oauthDiagnostic.detail,'Google HTTP 400');
+ assert.equal(plugin.settings.oauthDiagnostic.detail,'Google HTTP 400 · invalid_client · REVISAR_CONFIGURACAO');
  assert.equal(settings.join('').includes('codeSECRET'),false);
  assert.equal(settings.join('').includes('stateSECRET'),false);
  assert.equal(settings.join('').includes('verifierSECRET'),false);
