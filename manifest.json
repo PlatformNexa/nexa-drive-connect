@@ -1,9 +1,9 @@
 {
   "id": "nexa-drive-connect",
   "name": "NEXA Drive Connect",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "minAppVersion": "1.11.4",
-  "description": "Candidato LAB: diagnóstico de causa OAuth Google, Windows/iOS e sincronização de teste.",
+  "description": "NEXA LAB: OAuth Relay protegido, Windows/iOS, sincronização Google Drive.",
   "author": "NEXA",
   "isDesktopOnly": false
 }

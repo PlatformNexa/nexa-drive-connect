@@ -1,0 +1,22 @@
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const ctx={crypto:require('node:crypto').webcrypto,TextEncoder,URLSearchParams,URL,Uint8Array,Date,btoa,console};
+vm.createContext(ctx);vm.runInContext(fs.readFileSync('src/auth.js','utf8')+';this.auth=NEXA_AUTH;',ctx);
+(async()=>{
+ const relay={url:'https://nexa-service-uc.a.run.app/v1/token',key:'b'.repeat(64)};
+ const opts=[];
+ const request=async x=>{opts.push(x);return{status:200,json:{access_token:'token-secret',refresh_token:'refresh-secret',expires_in:3600}};};
+ const result=await ctx.auth.exchange(request,'1234-test.apps.googleusercontent.com','sample-google-auth-code','x'.repeat(64),relay);
+ assert.equal(result.refresh_token,'refresh-secret');
+ const b=new URLSearchParams(opts[0].body);
+ assert.equal(b.has('client_secret'),false);
+ assert.equal(b.get('code_verifier'),'x'.repeat(64));
+ assert.equal(opts[0].url,relay.url);
+ assert.equal(opts[0].headers['X-Nexa-Relay-Key'],relay.key);
+ await ctx.auth.refresh(request,'1234-test.apps.googleusercontent.com','a'.repeat(20),relay);
+ assert.equal(new URLSearchParams(opts[1].body).get('grant_type'),'refresh_token');
+ assert.equal(opts[1].headers['X-Nexa-Relay-Key'],relay.key);
+ await assert.rejects(()=>ctx.auth.exchange(request,'id','secret','verifier',{url:'https://attacker.example.com/v1/token',key:relay.key}),/Cloud Run/);
+ await assert.rejects(()=>ctx.auth.exchange(request,'id','secret','verifier',{url:relay.url,key:'short'}),/64/);
+ console.log('PASS Relay client: HTTPS run.app only, code/refresh, no Client Secret in requests');
+})().catch(e=>{console.error(e);process.exitCode=1;});

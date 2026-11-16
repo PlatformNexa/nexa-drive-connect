@@ -2,7 +2,7 @@
 const assert=require('node:assert/strict'),fs=require('node:fs');
 const main=fs.readFileSync('main.js','utf8');
 assert.match(main,/registerObsidianProtocolHandler/);
-assert.match(main,/oauth2\.googleapis\.com\/token/);
+assert.match(main,/NEXA OAuth Relay/);
 assert.match(main,/NEXA_SYNC\.SyncEngine/);
 assert.match(main,/secretStorage/);
 assert.doesNotMatch(main,/clientSecret|Client Secret Google|private-test-secret/);
