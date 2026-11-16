@@ -17,6 +17,8 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: node --check main.js
+      - run: node --check oauth-relay/server.js
+      - run: bash -n oauth-relay/setup-cloud-shell.sh
       - name: Compare compiled output with published source
         run: git diff --exit-code -- main.js
       - name: Export desktop candidate binaries
