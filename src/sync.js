@@ -88,7 +88,7 @@ const NEXA_SYNC = (() => {
     async backup(path,data,operation){
       const root='.nexa-connect-recovery';
       const stamp=new Date().toISOString().replace(/[:.]/g,'-');
-      const target=`${root}/${stamp}/${operation}/${path}`;
+      let target=`${root}/${stamp}/${operation}/${path}`;
       const parts=target.split('/');
       let dir='';for(const part of parts.slice(0,-1)){
         dir=dir?dir+'/'+part:part;
