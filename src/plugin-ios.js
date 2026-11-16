@@ -259,8 +259,8 @@ module.exports=class NexaDriveConnect extends Plugin{
       this.oauthPending=null;
       await this.updateSecret({pendingOAuth:null}).catch(()=>{});
       const msg=errorMessage(e);
-      const match=msg.match(/OAuth Google: HTTP (\d{3})/);
-      const detail=match?'Google HTTP '+match[1]:'Falha na etapa '+phase;
+      const match=msg.match(/OAuth Google: HTTP (\d{3}) \(([a-z0-9_]+)\) \[([A-Z_]+)\]/);
+      const detail=match?'Google HTTP '+match[1]+' · '+match[2]+' · '+match[3]:'Falha na etapa '+phase;
       await this.recordOAuthStage('ERRO_'+phase,detail).catch(()=>{});
       new Notice('NEXA OAuth: '+msg,10000);
     }

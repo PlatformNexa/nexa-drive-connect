@@ -34,7 +34,20 @@ const NEXA_AUTH = (() => {
   async function tokenRequest(request,body){
     const r=await request({url:TOKEN_URL,method:'POST',contentType:'application/x-www-form-urlencoded',body,
       headers:{'Content-Type':'application/x-www-form-urlencoded'},throw:false});
-    if(r.status!==200) throw new Error('OAuth Google: HTTP '+r.status+'. Revise cliente, redirecionamento e autorização.');
+    if(r.status!==200){
+      // Persist only a short, validated OAuth error identifier and a classification.
+      // Never persist/echo response bodies: they may contain sensitive details.
+      let payload={};try{payload=r.json||JSON.parse(r.text||'{}');}catch(_){}
+      const raw=String(payload.error||'');
+      const code=/^[a-z][a-z0-9_]{0,49}$/.test(raw)?raw:'unknown';
+      const description=String(payload.error_description||'');
+      let hint='REVISAR_CONFIGURACAO';
+      if(/client[_ -]?secret/i.test(description))hint='CLIENT_SECRET_REQUERIDO';
+      else if(/redirect[_ -]?uri|redirect uri/i.test(description))hint='REDIRECT_URI';
+      else if(/code[_ -]?verifier|code[_ -]?challenge|pkce/i.test(description))hint='PKCE';
+      else if(/expired|already (?:been )?used|reused/i.test(description))hint='CODIGO_EXPIRADO_OU_REUTILIZADO';
+      throw new Error('OAuth Google: HTTP '+r.status+' ('+code+') ['+hint+']');
+    }
     const out=r.json||JSON.parse(r.text);
     if(!out.access_token || !out.expires_in)throw new Error('Resposta OAuth incompleta.');
     return out;

@@ -1,9 +1,9 @@
 {
   "id": "nexa-drive-connect",
   "name": "NEXA Drive Connect",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "minAppVersion": "1.11.4",
-  "description": "Candidato de laboratório: teste seguro de sincronização Google Drive no Obsidian Windows/iOS.",
+  "description": "Candidato LAB: diagnóstico de causa OAuth Google, Windows/iOS e sincronização de teste.",
   "author": "NEXA",
   "isDesktopOnly": false
 }

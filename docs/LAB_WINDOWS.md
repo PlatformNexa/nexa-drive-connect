@@ -24,3 +24,7 @@ Se uma mesma nota for alterada nas duas pontas, abra **Analisar alterações →
 
 ### Linhas modificadas
 O botão **Comparar versões** agora exibe as linhas da cópia local e as do Drive lado a lado, com os símbolos +, − e ≠ e cor de fundo quando aplicável. Se o arquivo for grande, a interface não simula uma comparação parcial como se fosse integral: informa o limite e permite preservar as duas versões.
+
+
+## Diagnóstico refinado da resposta Google (LAB 1.1.2)
+Em HTTP 400 durante a troca de código por tokens, o NEXA agora registra apenas o identificador limitado do erro OAuth (ex.: `invalid_client`, `invalid_request`, `invalid_grant`) e uma categoria genérica baseada na descrição do Google (por exemplo `CLIENT_SECRET_REQUERIDO`). Não imprime o corpo HTTP nem tokens, códigos, PKCE verifier ou Client Secret. O resultado aparece em **Diagnóstico do login Google → Verificar autenticação**. Um cliente OAuth Web pode requerer troca do código no servidor com credenciais confidenciais; nunca coloque o segredo no plugin, cofre ou repositório. A autorização real ainda não está homologada.
