@@ -58,3 +58,13 @@ Código-fonte disponibilizado para inspeção, com direitos reservados. Veja LIC
 - Evita popup disparado depois de operação assíncrona no iOS: o usuário toca no link da janela do NEXA, com alternativa de copiar.
 - Motor falha fechado se algum bloqueio for detectado antes da execução.
 - **Limitação:** a troca de código sem secret ainda exige validação real no Google/iOS; se o provedor rejeitar, não incluir segredo no código — revisar o tipo de cliente/fluxo.
+
+
+## Candidato Windows em desenvolvimento
+
+A implementação para **Obsidian Desktop/Windows** está em `feature/windows-desktop`, compartilhando o motor móvel. Ver [Guia Windows](docs/WINDOWS.md). Não interfere na revisão da release 1.0.1 do iPhone.
+
+
+## Merge de alterações independentes (candidato Windows)
+
+Merge Markdown de três vias com ancestral preservado localmente, backup local/remoto e bloqueio de edições sobrepostas. Ver [docs/MERGE.md](docs/MERGE.md). Recurso experimental na branch Windows: não validado em dispositivos físicos.

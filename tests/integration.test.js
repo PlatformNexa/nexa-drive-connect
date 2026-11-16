@@ -1,8 +1,8 @@
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),crypto=require('node:crypto');
-const ctx={TextEncoder,Uint8Array,ArrayBuffer,DataView,Map,Set,Date,URLSearchParams,crypto:crypto.webcrypto,console};
+const ctx={TextEncoder,TextDecoder,Uint8Array,Uint16Array,ArrayBuffer,DataView,Map,Set,Date,URLSearchParams,crypto:crypto.webcrypto,console};
 vm.createContext(ctx);
-for(const n of ['core','drive','sync'])vm.runInContext(fs.readFileSync('src/'+n+'.js','utf8')+`;this.${n}=NEXA_${n.toUpperCase()}`,ctx);
+for(const n of ['core','drive','merge','sync'])vm.runInContext(fs.readFileSync('src/'+n+'.js','utf8')+`;this.${n}=NEXA_${n.toUpperCase()}`,ctx);
 const c=ctx.core;
 class Vault{
  constructor(){this.data=new Map([['local.md',new Uint8Array(Buffer.from('local'))]]);this.adapter={
