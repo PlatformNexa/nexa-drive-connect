@@ -21,36 +21,38 @@ const NEXA_AUTH = (() => {
       access_type:'offline',prompt:'consent',code_challenge_method:'S256',code_challenge:await challenge(verifier),state});
     return {verifier,state,expires:Date.now()+15*60*1000,url:AUTH_URL+'?'+q.toString()};
   }
-  async function exchange(request, clientId, code, verifier) {
-    if(!code || !verifier)throw new Error('Código/verificador ausente.');
-    const body=new URLSearchParams({client_id:clientId,code,code_verifier:verifier,
-      grant_type:'authorization_code',redirect_uri:CALLBACK}).toString();
-    return tokenRequest(request,body);
+  function secureRelay(relay){
+    if(!relay?.url||!relay?.key)throw Error('Configure o NEXA OAuth Relay.');
+    let u;try{u=new URL(relay.url);}catch(_){throw Error('Endereço do Relay inválido.');}
+    if(u.protocol!=='https:'||!u.hostname.endsWith('.run.app')||u.pathname!=='/v1/token'||
+      u.search||u.hash||u.username||u.password)throw Error('Relay LAB: somente HTTPS no Cloud Run.');
+    if(!/^[a-f0-9]{64}$/i.test(relay.key))throw Error('Chave do Relay inválida (64 caracteres).');
+    return u.href;
   }
-  async function refresh(request,clientId,refreshToken){
-    const body=new URLSearchParams({client_id:clientId,refresh_token:refreshToken,grant_type:'refresh_token'}).toString();
-    return tokenRequest(request,body);
+  async function exchange(request,clientId,code,verifier,relay){
+    if(!code||!verifier)throw Error('Código/verificador ausente.');
+    return tokenRequest(request,new URLSearchParams({grant_type:'authorization_code',
+      code,code_verifier:verifier}).toString(),relay);
   }
-  async function tokenRequest(request,body){
-    const r=await request({url:TOKEN_URL,method:'POST',contentType:'application/x-www-form-urlencoded',body,
-      headers:{'Content-Type':'application/x-www-form-urlencoded'},throw:false});
+  async function refresh(request,clientId,token,relay){
+    return tokenRequest(request,new URLSearchParams({
+      grant_type:'refresh_token',refresh_token:token}).toString(),relay);
+  }
+  async function tokenRequest(request,body,relay){
+    const url=secureRelay(relay);
+    const r=await request({url,method:'POST',contentType:'application/x-www-form-urlencoded',
+      headers:{'Content-Type':'application/x-www-form-urlencoded','X-Nexa-Relay-Key':relay.key},
+      body,throw:false});
     if(r.status!==200){
-      // Persist only a short, validated OAuth error identifier and a classification.
-      // Never persist/echo response bodies: they may contain sensitive details.
-      let payload={};try{payload=r.json||JSON.parse(r.text||'{}');}catch(_){}
-      const raw=String(payload.error||'');
-      const code=/^[a-z][a-z0-9_]{0,49}$/.test(raw)?raw:'unknown';
-      const description=String(payload.error_description||'');
-      let hint='REVISAR_CONFIGURACAO';
-      if(/client[_ -]?secret/i.test(description))hint='CLIENT_SECRET_REQUERIDO';
-      else if(/redirect[_ -]?uri|redirect uri/i.test(description))hint='REDIRECT_URI';
-      else if(/code[_ -]?verifier|code[_ -]?challenge|pkce/i.test(description))hint='PKCE';
-      else if(/expired|already (?:been )?used|reused/i.test(description))hint='CODIGO_EXPIRADO_OU_REUTILIZADO';
-      throw new Error('OAuth Google: HTTP '+r.status+' ('+code+') ['+hint+']');
+      let value={};try{value=r.json||JSON.parse(r.text||'{}');}catch(_){}
+      const err=String(value.error||''),hint=String(value.hint||'');
+      const code=/^[a-z][a-z0-9_]{0,49}$/.test(err)?err:'unknown';
+      const category=/^[A-Z][A-Z0-9_]{0,50}$/.test(hint)?hint:'REVISAR_SERVICO';
+      throw Error('OAuth Relay: HTTP '+r.status+' ('+code+') ['+category+']');
     }
-    const out=r.json||JSON.parse(r.text);
-    if(!out.access_token || !out.expires_in)throw new Error('Resposta OAuth incompleta.');
-    return out;
+    const output=r.json||JSON.parse(r.text);
+    if(!output.access_token||!output.expires_in)throw Error('Resposta OAuth incompleta.');
+    return output;
   }
   return {start,exchange,refresh,CALLBACK,SCOPE};
 })();

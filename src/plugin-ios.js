@@ -1,7 +1,7 @@
 /* NEXA Drive Connect — iPhone direct OAuth/Google Drive adapter, controlled synchronization. */
 const { Plugin, PluginSettingTab, Setting, Modal, Notice, requestUrl, Platform } = require('obsidian');
 const NEXA_SECRET_KEY = 'nexa-drive-connect-google-oauth-v1';
-const DEFAULT_SETTINGS={clientId:'',remoteRootId:'',autoSync:false,intervalMinutes:10,
+const DEFAULT_SETTINGS={clientId:'',relayUrl:'',remoteRootId:'',autoSync:false,intervalMinutes:10,
   lastStatus:'Ainda não sincronizado',remoteRootName:'',baseline:{},firstSyncApproved:false,boundRootId:''};
 function errorMessage(e){return String(e && e.message || e).replace(/[\r\n]/g,' ').slice(0,220);}
 class NexaPlanModal extends Modal {
@@ -99,12 +99,23 @@ class NexaSettingsTab extends PluginSettingTab{
   constructor(app,plugin){super(app,plugin);this.plugin=plugin;}
   display(){
     const p=this.plugin,e=this.containerEl;e.empty();
-    e.createEl('h2',{text:'NEXA Drive Connect LAB — '+(NEXA_PLATFORM.classify(Platform)==='windows'?'Windows':NEXA_PLATFORM.classify(Platform)==='desktop'?'Desktop':'Mobile')});
+    e.createEl('h2',{text:'NEXA Drive Connect LAB v'+(p.manifest?.version||'?')+' — '+(NEXA_PLATFORM.classify(Platform)==='windows'?'Windows':NEXA_PLATFORM.classify(Platform)==='desktop'?'Desktop':'Mobile')});
     e.createEl('p',{text:'MODO LAB WINDOWS: somente a pasta Google Drive NEXA_DRIVE_CONNECT_LAB é aceita; o acervo oficial Obsidian fica bloqueado. Sem Drive Sync; autenticação OAuth PKCE.'});
     if(NEXA_PLATFORM.classify(Platform)==='windows')new Setting(e).setName('Diagnóstico Windows').setDesc('Detecta indícios de cofre em pasta de sincronização externa; não examina conteúdo nem envia caminho do computador.').addButton(b=>b.setButtonText('Verificar cofre').onClick(()=>p.desktopPreflight()));
     e.createEl('p',{text:'Atenção: permissão OAuth do Google abrange o Drive da conta. O NEXA limita suas operações à pasta verificada. Nunca use uma conta com documentos confidenciais sem revisar essa permissão.'});
     new Setting(e).setName('Client ID Google').setDesc('ID do cliente OAuth tipo Aplicação web criado no seu Google Cloud.').addText(t=>t.setPlaceholder('...apps.googleusercontent.com').setValue(p.settings.clientId).onChange(async v=>{p.settings.clientId=v.trim();await p.saveSettings();}));
-    new Setting(e).setName('Login Google').setDesc('Prepara OAuth PKCE e apresenta um link para tocar e abrir o navegador do dispositivo.').addButton(b=>b.setButtonText('Autorizar Google').onClick(()=>p.authorize()));
+    new Setting(e).setName('Endereço do OAuth Relay').setDesc('Cole o endereço HTTPS do Cloud Run, sem /v1/token.')
+      .addText(t=>t.setPlaceholder('https://seu-relay.a.run.app').setValue(p.settings.relayUrl||'')
+        .onChange(async v=>{p.settings.relayUrl=v.trim();await p.saveSettings();}));
+    new Setting(e).setName('Chave privada do Relay')
+      .setDesc('Gerada no Cloud Shell; salva apenas no SecretStorage local. '+(p.readCredentials().relayAccessKey?'Configurada.':'Não configurada.'))
+      .addText(t=>{
+        t.setPlaceholder('Chave de 64 caracteres');t.inputEl.type='password';
+        t.onChange(async v=>{if(v.trim())await p.updateSecret({relayAccessKey:v.trim()});});
+        t.inputEl.addEventListener('blur',()=>t.setValue(''));
+      });
+    new Setting(e).setName('Login Google').setDesc('Utiliza o Relay seguro para trocar o código por tokens.')
+      .addButton(b=>b.setButtonText('Autorizar Google').onClick(()=>p.authorize()));
     new Setting(e).setName('Diagnóstico do login Google')
       .setDesc('Mostra o estado do retorno OAuth sem exibir credenciais ou exigir Console.')
       .addButton(b=>b.setButtonText('Verificar autenticação').onClick(()=>p.showOAuthDiagnostic()));
@@ -205,6 +216,15 @@ module.exports=class NexaDriveConnect extends Plugin{
     new Setting(e).addButton(b=>b.setButtonText('Fechar').onClick(()=>m.close()));
     m.open();
   }
+  relayConfig(){
+    let u;try{u=new URL((this.settings.relayUrl||'').trim());}catch(_){throw Error('Configure o endereço HTTPS do OAuth Relay.');}
+    if(u.protocol!=='https:'||!u.hostname.endsWith('.run.app')||u.username||u.password||
+       u.hash||u.search||(u.pathname!=='/'&&u.pathname!=='/v1/token'))
+      throw Error('Relay LAB: use o endereço HTTPS do Cloud Run.');
+    const key=this.readCredentials().relayAccessKey||'';
+    if(!/^[a-f0-9]{64}$/i.test(key))throw Error('Configure a chave do Relay com 64 caracteres.');
+    return {url:u.origin+'/v1/token',key};
+  }
   readCredentials(){
     const raw=this.app.secretStorage?.getSecret(NEXA_SECRET_KEY);
     if(!raw)return {};try{return JSON.parse(raw);}catch{return {};}
@@ -219,6 +239,7 @@ module.exports=class NexaDriveConnect extends Plugin{
   }
   async authorize(){
     try{
+      this.relayConfig();
       this.oauthPending=await NEXA_AUTH.start(this.settings.clientId);
       await this.updateSecret({pendingOAuth:this.oauthPending});
       await this.recordOAuthStage('AGUARDANDO_RETORNO');
@@ -249,7 +270,7 @@ module.exports=class NexaDriveConnect extends Plugin{
       const old=this.readCredentials();
       phase='TOKEN';
       await this.recordOAuthStage('TROCANDO_CODIGO');
-      const received=await NEXA_AUTH.exchange(requestUrl,this.settings.clientId,params.code,pending.verifier);
+      const received=await NEXA_AUTH.exchange(requestUrl,this.settings.clientId,params.code,pending.verifier,this.relayConfig());
       phase='ARMAZENAMENTO';
       await this.updateSecret({pendingOAuth:null,accessToken:received.access_token,refreshToken:received.refresh_token||old.refreshToken,
         expiresAt:Date.now()+Number(received.expires_in)*1000});
@@ -259,7 +280,7 @@ module.exports=class NexaDriveConnect extends Plugin{
       this.oauthPending=null;
       await this.updateSecret({pendingOAuth:null}).catch(()=>{});
       const msg=errorMessage(e);
-      const match=msg.match(/OAuth Google: HTTP (\d{3}) \(([a-z0-9_]+)\) \[([A-Z_]+)\]/);
+      const match=msg.match(/OAuth (?:Google|Relay): HTTP (\d{3}) \(([a-z0-9_]+)\) \[([A-Z_]+)\]/);
       const detail=match?'Google HTTP '+match[1]+' · '+match[2]+' · '+match[3]:'Falha na etapa '+phase;
       await this.recordOAuthStage('ERRO_'+phase,detail).catch(()=>{});
       new Notice('NEXA OAuth: '+msg,10000);
@@ -269,7 +290,7 @@ module.exports=class NexaDriveConnect extends Plugin{
     const c=this.readCredentials();
     if(c.accessToken && Date.now()<c.expiresAt-90000)return c.accessToken;
     if(!c.refreshToken || !this.settings.clientId)throw new Error('Faça login no Google nas configurações.');
-    const t=await NEXA_AUTH.refresh(requestUrl,this.settings.clientId,c.refreshToken);
+    const t=await NEXA_AUTH.refresh(requestUrl,this.settings.clientId,c.refreshToken,this.relayConfig());
     await this.updateSecret({accessToken:t.access_token,expiresAt:Date.now()+Number(t.expires_in)*1000});
     return t.access_token;
   }
