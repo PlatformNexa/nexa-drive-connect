@@ -1,6 +1,6 @@
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-const context={crypto:require('node:crypto').webcrypto,TextEncoder,URLSearchParams,Uint8Array,Date,btoa,console};
+const context={crypto:require('node:crypto').webcrypto,TextEncoder,URLSearchParams,URL,Uint8Array,Date,btoa,console};
 vm.createContext(context);vm.runInContext(fs.readFileSync('src/auth.js','utf8')+';this.auth=NEXA_AUTH;',context);
 (async()=>{
  const a=context.auth;
