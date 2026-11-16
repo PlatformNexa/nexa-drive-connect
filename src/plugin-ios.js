@@ -105,6 +105,9 @@ class NexaSettingsTab extends PluginSettingTab{
     e.createEl('p',{text:'Atenção: permissão OAuth do Google abrange o Drive da conta. O NEXA limita suas operações à pasta verificada. Nunca use uma conta com documentos confidenciais sem revisar essa permissão.'});
     new Setting(e).setName('Client ID Google').setDesc('ID do cliente OAuth tipo Aplicação web criado no seu Google Cloud.').addText(t=>t.setPlaceholder('...apps.googleusercontent.com').setValue(p.settings.clientId).onChange(async v=>{p.settings.clientId=v.trim();await p.saveSettings();}));
     new Setting(e).setName('Login Google').setDesc('Prepara OAuth PKCE e apresenta um link para tocar e abrir o navegador do dispositivo.').addButton(b=>b.setButtonText('Autorizar Google').onClick(()=>p.authorize()));
+    new Setting(e).setName('Diagnóstico do login Google')
+      .setDesc('Mostra o estado do retorno OAuth sem exibir credenciais ou exigir Console.')
+      .addButton(b=>b.setButtonText('Verificar autenticação').onClick(()=>p.showOAuthDiagnostic()));
     e.createEl('p',{text:'URI de retorno obrigatório no Google Cloud: '+NEXA_AUTH.CALLBACK});
     new Setting(e).setName('ID da pasta NEXA_DRIVE_CONNECT_LAB').setDesc('Cole o ID ou URL da pasta remota de laboratório. O plugin recusa a pasta oficial Obsidian.').addText(t=>t.setPlaceholder('ID ou link da pasta Obsidian').setValue(p.settings.remoteRootId).onChange(async v=>{
       p.settings.remoteRootId=p.extractId(v);await p.saveSettings();
@@ -181,6 +184,27 @@ module.exports=class NexaDriveConnect extends Plugin{
     s=String(s||'').trim();const match=s.match(/\/folders\/([A-Za-z0-9_-]{8,})/);
     return match?match[1]:s;
   }
+  async recordOAuthStage(stage,detail=''){
+    this.settings.oauthDiagnostic={stage,detail,at:new Date().toISOString()};
+    await this.saveSettings();
+  }
+  showOAuthDiagnostic(){
+    let c={};
+    try{c=this.readCredentials();}catch(_){}
+    const d=this.settings.oauthDiagnostic||{};
+    const pending=this.oauthPending||c.pendingOAuth;
+    const m=new Modal(this.app),e=m.contentEl;
+    e.createEl('h2',{text:'NEXA — Diagnóstico de autenticação'});
+    e.createEl('p',{text:'Etapa: '+(d.stage||'Não registrada')});
+    e.createEl('p',{text:'Detalhe: '+(d.detail||'Nenhum')});
+    e.createEl('p',{text:'Retorno pendente: '+(pending&&Date.now()<pending.expires?'SIM':'NÃO')});
+    e.createEl('p',{text:'Token presente: '+(c.accessToken?'SIM':'NÃO')});
+    e.createEl('p',{text:'Renovação disponível: '+(c.refreshToken?'SIM':'NÃO')});
+    e.createEl('p',{text:'Horário da última etapa: '+(d.at||'Não registrado')});
+    e.createEl('p',{text:'Sem exibição de tokens, códigos de autorização, states ou segredos.'});
+    new Setting(e).addButton(b=>b.setButtonText('Fechar').onClick(()=>m.close()));
+    m.open();
+  }
   readCredentials(){
     const raw=this.app.secretStorage?.getSecret(NEXA_SECRET_KEY);
     if(!raw)return {};try{return JSON.parse(raw);}catch{return {};}
@@ -197,6 +221,7 @@ module.exports=class NexaDriveConnect extends Plugin{
     try{
       this.oauthPending=await NEXA_AUTH.start(this.settings.clientId);
       await this.updateSecret({pendingOAuth:this.oauthPending});
+      await this.recordOAuthStage('AGUARDANDO_RETORNO');
       // Deliberately show a real link. iOS WKWebView can block window.open after await;
       // tapping the anchor is a separate user gesture, with a copy fallback.
       const login=new Modal(this.app); const e=login.contentEl;
@@ -214,17 +239,31 @@ module.exports=class NexaDriveConnect extends Plugin{
     }catch(e){new Notice('NEXA: '+errorMessage(e),9000);}
   }
   async handleOAuth(params){
+    let phase='RETORNO';
     try{
+      await this.recordOAuthStage('RETORNO_RECEBIDO');
       const pending=this.oauthPending || this.readCredentials().pendingOAuth;
       if(params.error)throw new Error('Autorização negada pelo Google.');
       if(!pending || Date.now()>pending.expires || !params.code || params.state!==pending.state)throw new Error('Retorno OAuth expirado ou não corresponde à autorização iniciada.');
       this.oauthPending=null;
       const old=this.readCredentials();
+      phase='TOKEN';
+      await this.recordOAuthStage('TROCANDO_CODIGO');
       const received=await NEXA_AUTH.exchange(requestUrl,this.settings.clientId,params.code,pending.verifier);
+      phase='ARMAZENAMENTO';
       await this.updateSecret({pendingOAuth:null,accessToken:received.access_token,refreshToken:received.refresh_token||old.refreshToken,
         expiresAt:Date.now()+Number(received.expires_in)*1000});
+      await this.recordOAuthStage('AUTORIZADO');
       new Notice('NEXA: Google autorizado neste aparelho. Execute a prévia antes de sincronizar.');
-    }catch(e){this.oauthPending=null;await this.updateSecret({pendingOAuth:null}).catch(()=>{});new Notice('NEXA OAuth: '+errorMessage(e),10000);}
+    }catch(e){
+      this.oauthPending=null;
+      await this.updateSecret({pendingOAuth:null}).catch(()=>{});
+      const msg=errorMessage(e);
+      const match=msg.match(/OAuth Google: HTTP (\d{3})/);
+      const detail=match?'Google HTTP '+match[1]:'Falha na etapa '+phase;
+      await this.recordOAuthStage('ERRO_'+phase,detail).catch(()=>{});
+      new Notice('NEXA OAuth: '+msg,10000);
+    }
   }
   async accessToken(){
     const c=this.readCredentials();
